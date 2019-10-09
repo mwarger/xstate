@@ -1,4 +1,4 @@
-# Machines (Statecharts)
+# Machines
 
 A **state machine** is a finite set of [states](./statenodes.md) that can transition to each other deterministically due to events. A **statechart** is an extension of state machines; mainly, they can have:
 
@@ -42,7 +42,12 @@ const lightMachine = Machine({
 });
 ```
 
-The machine config is the same as the [state node config](./statenodes.md), with the exception of [`context`](./context.md). The machine's `context` represents the local "extended state" for all of the machine's nested states.
+The machine config is the same as the [state node config](./statenodes.md), with the addition of the following properties:
+
+- `context` - represents the local "extended state" for all of the machine's nested states. See [the docs for context](./context.md) for more details.
+- `strict` - if `true`, ensures the following constraints are met. Defaults to `false`.
+  - Any events that are sent to the machine but not accepted (i.e., there doesn't exist any transitions in any state for the given event) will throw an error.
+  - Any unhandled Promise rejections will stop the machine ([Promise Rejection](./communication.md#promise-rejection)/Async [Invoking Callbacks](./communication.md#invoking-callbacks)).
 
 ## Options
 
@@ -52,18 +57,18 @@ Implementations for [actions](./actions.md), [activities](./activities.md), [gua
 const lightMachine = Machine(
   {
     id: 'light',
-    initial: 'active',
+    initial: 'green',
     states: {
       green: {
         // action referenced via string
-        onEntry: 'alertGreen'
+        entry: 'alertGreen'
       }
     }
   },
   {
     actions: {
       // action implementation
-      alertGreen: (ctx, event) => {
+      alertGreen: (context, event) => {
         alert('Green!');
       }
     },
@@ -96,7 +101,7 @@ const lightMachine = // (same as above example)
 
 const noAlertLightMachine = lightMachine.withConfig({
   actions: {
-    alertGreen: (ctx, event) => {
+    alertGreen: (context, event) => {
       console.log('green');
     }
   }
@@ -116,7 +121,8 @@ const testLightMachine = lightMachine.withContext({
 });
 ```
 
-⚠️ Caution: this will _not_ do a shallow merge of the original `context`, and will instead _replace_ the original `context` with the `context` provided to `.withContext(...)`. You can still "merge" contexts manually, by referencing `machine.context`:
+::: warning
+This will _not_ do a shallow merge of the original `context`, and will instead _replace_ the original `context` with the `context` provided to `.withContext(...)`. You can still "merge" contexts manually, by referencing `machine.context`:
 
 ```js
 const testLightMachine = lightMachine.withContext({
@@ -125,3 +131,5 @@ const testLightMachine = lightMachine.withContext({
   elapsed: 1000
 });
 ```
+
+:::

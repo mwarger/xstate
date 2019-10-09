@@ -14,7 +14,7 @@ import { Machine } from 'xstate';
 const promiseMachine = Machine(/* ... */);
 ```
 
-We'll pass the [machine configuration](./machine.md) inside of `Machine(...)`. Since this is a [hierarchical machine](./hierarchical.md), we need to provide the:
+We'll pass the [machine configuration](./machines.md#configuration) inside of `Machine(...)`. Since this is a [hierarchical machine](./hierarchical.md), we need to provide the:
 
 - `id` - to identify the machine and set the base string for its child state node IDs
 - `initial` - to specify the initial state node this machine should be in
@@ -79,3 +79,7 @@ promiseService.start();
 promiseService.send('RESOLVE');
 // => 'resolved'
 ```
+
+You can also copy/paste the `Machine(...)` code and [visualize it on XState Viz](https://xstate.js.org/viz):
+
+<iframe src="https://xstate.js.org/viz/?gist=9e4476d6312ac1bb29938d6c5e7f8f84&embed=1"></iframe>

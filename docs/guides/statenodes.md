@@ -30,7 +30,7 @@ const nextState = fetchMachine.transition('pending', 'FULFILL');
 
 ## State nodes
 
-In XState, a **state node** specifies a state configuration, and are defined on the machine's `states` property. Substate nodes are recursively defined in the same way.
+In XState, a **state node** specifies a state configuration. They are defined on the machine's `states` property. Likewise, sub-state nodes are hierarchically defined on the `states` property of a state node.
 
 The state determined from `machine.transition(state, event)` represents a combination of state nodes. For example, in the machine below, there's a `success` state node and an `items` substate node. The state value `{ success: 'items' }` represents the combination of those state nodes.
 
@@ -71,10 +71,15 @@ const fetchMachine = Machine({
           }
         }
       }
+    },
+    failure: {
+      RETRY: 'pending'
     }
   }
 });
 ```
+
+<iframe src="https://xstate.js.org/viz/?gist=932f6d193fa9d51afe31b236acf291c9&embed=1"></iframe>
 
 ## State node types
 
@@ -157,6 +162,8 @@ const machine = Machine({
 });
 ```
 
+<iframe src="https://xstate.js.org/viz/?gist=75cc77b35e98744e8d10902147feb313&embed=1"></iframe>
+
 Explicitly specifying the `type` as `'atomic'`, `'compound'`, `'parallel'`, `'history'`, or `'final'` is helpful with regard to analysis and type-checking in TypeScript. However, it is only required for parallel, history, and final states.
 
 ## Transient state nodes
@@ -203,3 +210,5 @@ const timeOfDayService = interpret(timeOfDayMachine
 
 // => 'morning' (assuming the time is before noon)
 ```
+
+<iframe src="https://xstate.js.org/viz/?gist=ca6a3f84f585c3e9cd6aadc3ae00b886&embed=1"></iframe>
