@@ -19,24 +19,24 @@ async function runTestToCompletion(
   machine: StateNode,
   test: SCIONTest
 ): Promise<void> {
-  if (!test.events.length && test.initialConfiguration[0] === 'pass') {
-    // await runW3TestToCompletion(machine);
-    return;
-  }
+  const stateValue = test.events.length
+    ? pathsToStateValue(
+        test.initialConfiguration.map((id) => machine.getStateNodeById(id).path)
+      )
+    : machine.initialState.value;
 
-  const r = pathsToStateValue(
-    test.initialConfiguration.map(id => machine.getStateNodeById(id).path)
-  );
-
-  const resolvedStateValue = machine.resolve(r);
+  const resolvedStateValue = machine.resolve(stateValue);
 
   let done = false;
-  let nextState: State<any> = machine.getInitialState(resolvedStateValue);
+  let nextState: State<any> = machine.getInitialState(
+    resolvedStateValue,
+    machine.initialState.context
+  );
 
   const service = interpret(machine, {
     clock: new SimulatedClock()
   })
-    .onTransition(state => {
+    .onTransition((state) => {
       nextState = state;
     })
     .onDone(() => {
@@ -45,7 +45,7 @@ async function runTestToCompletion(
     .start(nextState);
 
   // @ts-ignore
-  service._state = nextState;
+  // service._state = nextState;
 
   test.events.forEach(({ event, nextConfiguration, after }) => {
     if (done) {
@@ -58,10 +58,15 @@ async function runTestToCompletion(
 
     const stateIds = machine
       .getStateNodes(nextState)
-      .map(stateNode => stateNode.id);
+      .map((stateNode) => stateNode.id);
 
     expect(stateIds).toContain(nextConfiguration[0]);
   });
+
+  if (!test.events.length) {
+    const stateIds = machine.getStateNodes(nextState).map((sn) => sn.id);
+    expect(stateIds).toContain(test.initialConfiguration[0]);
+  }
 }
 
 const testGroups = {
@@ -76,21 +81,26 @@ const testGroups = {
     'send8',
     'send8b',
     'send9'
-  ],
-  assign: [
-    // 'assign_obj_literal'
   ]
+  // assign: [
+  // 'assign_obj_literal' // <script/> conversion not implemented
+  // 'assign_invalid', // TODO: error handling for assign()
+  // ],
+  // 'assign-current-small-step': [
+  // 'test0' // <script/> conversion not implemented
+  // 'test1',
+  // ]
 };
 
 describe('scxml', () => {
   const testGroupKeys = Object.keys(testGroups);
   // const testGroupKeys = ['scxml-prefix-event-name-matching'];
 
-  testGroupKeys.forEach(testGroupName => {
-    testGroups[testGroupName].forEach(testName => {
-      const scxmlDefinition = toSCXML(
-        require(`./fixtures/${testGroupName}/${testName}`).default
-      );
+  testGroupKeys.forEach((testGroupName) => {
+    testGroups[testGroupName].forEach((testName) => {
+      const originalMachine = require(`./fixtures/${testGroupName}/${testName}`)
+        .default;
+      const scxmlDefinition = toSCXML(originalMachine);
 
       const scxmlTest = JSON.parse(
         fs.readFileSync(
@@ -103,42 +113,46 @@ describe('scxml', () => {
         )
       ) as SCIONTest;
 
+      it(`${testGroupName}/${testName} (sanity)`, async () => {
+        await runTestToCompletion(originalMachine, scxmlTest);
+      });
+
       it(`${testGroupName}/${testName}`, async () => {
         const machine = toMachine(scxmlDefinition, {
           delimiter: '$'
         });
 
         await runTestToCompletion(machine, scxmlTest);
-      });
+      }, 2000);
     });
   });
 });
 
-xdescribe('toSCXML', () => {
-  const testGroupKeys = Object.keys(testGroups);
-  // const testGroupKeys = ['scxml-prefix-event-name-matching'];
+// xdescribe('toSCXML', () => {
+//   const testGroupKeys = Object.keys(testGroups);
+//   // const testGroupKeys = ['scxml-prefix-event-name-matching'];
 
-  testGroupKeys.forEach(testGroupName => {
-    testGroups[testGroupName].forEach(testName => {
-      const scxmlSource = `@scion-scxml/test-framework/test/${testGroupName}/${testName}.scxml`;
-      const scxmlDefinition = fs.readFileSync(require.resolve(scxmlSource), {
-        encoding: 'utf-8'
-      });
+//   testGroupKeys.forEach(testGroupName => {
+//     testGroups[testGroupName].forEach(testName => {
+//       const scxmlSource = `@scion-scxml/test-framework/test/${testGroupName}/${testName}.scxml`;
+//       const scxmlDefinition = fs.readFileSync(require.resolve(scxmlSource), {
+//         encoding: 'utf-8'
+//       });
 
-      const machine = require(`./fixtures/${testGroupName}/${testName}`)
-        .default;
+//       const machine = require(`./fixtures/${testGroupName}/${testName}`)
+//         .default;
 
-      it(`${testGroupName}/${testName}`, () => {
-        expect(xml2js(toSCXML(machine))).toEqual(
-          xml2js(scxmlDefinition, {
-            ignoreComment: true,
-            ignoreDeclaration: true
-          })
-        );
-      });
-    });
-  });
-});
+//       it(`${testGroupName}/${testName}`, () => {
+//         expect(xml2js(toSCXML(machine))).toEqual(
+//           xml2js(scxmlDefinition, {
+//             ignoreComment: true,
+//             ignoreDeclaration: true
+//           })
+//         );
+//       });
+//     });
+//   });
+// });
 
 const pedestrianStates = {
   initial: 'walk',

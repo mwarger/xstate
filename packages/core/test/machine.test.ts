@@ -124,6 +124,36 @@ describe('machine', () => {
     });
   });
 
+  describe('machine.config', () => {
+    it('state node config should reference original machine config', () => {
+      const machine = Machine({
+        initial: 'one',
+        states: {
+          one: {
+            initial: 'deep',
+            states: {
+              deep: {}
+            }
+          }
+        }
+      });
+
+      const oneState = machine.getStateNodeByPath(['one']);
+
+      expect(oneState.config).toBe(machine.config.states!.one);
+
+      const deepState = machine.getStateNodeByPath(['one', 'deep']);
+
+      expect(deepState.config).toBe(machine.config.states!.one.states!.deep);
+
+      deepState.config.meta = 'testing meta';
+
+      expect(machine.config.states!.one.states!.deep.meta).toEqual(
+        'testing meta'
+      );
+    });
+  });
+
   describe('machine.withConfig', () => {
     it('should override guards and actions', () => {
       const differentMachine = configMachine.withConfig({
@@ -162,6 +192,35 @@ describe('machine', () => {
 
       expect(differentMachine.initialState.context).toEqual({
         foo: 'different'
+      });
+    });
+  });
+
+  describe('machine function context', () => {
+    const testMachineConfig = {
+      initial: 'active',
+      context: () => ({
+        foo: { bar: 'baz' }
+      }),
+      states: {
+        active: {}
+      }
+    };
+
+    it('context from a function should be lazily evaluated', () => {
+      const testMachine1 = Machine(testMachineConfig);
+      const testMachine2 = Machine(testMachineConfig);
+
+      expect(testMachine1.initialState.context).not.toBe(
+        testMachine2.initialState.context
+      );
+
+      expect(testMachine1.initialState.context).toEqual({
+        foo: { bar: 'baz' }
+      });
+
+      expect(testMachine2.initialState.context).toEqual({
+        foo: { bar: 'baz' }
       });
     });
   });
@@ -308,7 +367,7 @@ describe('StateNode', () => {
 
     const transitions = greenNode.transitions;
 
-    expect(transitions.map(t => t.eventType)).toEqual([
+    expect(transitions.map((t) => t.eventType)).toEqual([
       'TIMER',
       'POWER_OUTAGE',
       'FORBIDDEN_EVENT'

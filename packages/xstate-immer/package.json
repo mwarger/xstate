@@ -1,6 +1,6 @@
 {
   "name": "@xstate/immer",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "XState with Immer",
   "keywords": [
     "immer",
@@ -13,6 +13,7 @@
   "homepage": "https://github.com/davidkpiano/xstate/tree/master/packages/xstate-immer#readme",
   "license": "MIT",
   "main": "lib/index.js",
+  "types": "lib/index.d.ts",
   "sideEffects": false,
   "directories": {
     "lib": "lib",
@@ -28,21 +29,21 @@
   },
   "scripts": {
     "clean": "rm -rf dist lib tsconfig.tsbuildinfo",
-    "prebuild": "npm run clean",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "jest"
   },
   "bugs": {
     "url": "https://github.com/davidkpiano/xstate/issues"
   },
   "dependencies": {},
   "peerDependencies": {
-    "immer": "^2.1.5",
-    "xstate": "^4.6.0"
+    "immer": "^6.0.3",
+    "xstate": "^4.9.1"
   },
   "devDependencies": {
-    "immer": "^3.2.0",
+    "immer": "^6.0.3",
     "lerna-alias": "3.0.3-0",
-    "typescript": "^3.6.2",
-    "xstate": "^4.7.0-rc1"
+    "typescript": "^3.8.3",
+    "xstate": "*"
   }
 }

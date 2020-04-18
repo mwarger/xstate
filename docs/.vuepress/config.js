@@ -5,12 +5,6 @@ module.exports = {
     'Documentation for XState: State Machines and Statecharts for the Modern Web',
   markdown: {
     toc: { includeLevel: [2, 3] }
-    // lineNumbers: true
-    // config: md => {
-    //   md.use(mdCodesandboxPlugin, {
-    //     directory: 'sandboxes',
-    //   })
-    // }
   },
   themeConfig: {
     lastUpdated: 'Last Updated',
@@ -31,11 +25,12 @@ module.exports = {
     sidebar: [
       {
         title: 'About',
-        children: ['/about/concepts', '/about/goals', '/about/showcase']
-      },
-      {
-        title: 'Tutorials',
-        children: ['/tutorials/reddit']
+        children: [
+          '/about/concepts',
+          '/about/goals',
+          '/about/showcase',
+          '/about/tutorials'
+        ]
       },
       {
         title: 'Guides',
@@ -65,13 +60,34 @@ module.exports = {
         ]
       },
       {
+        title: 'Tutorials',
+        children: [
+          '/tutorials/reddit',
+          {
+            title: '7GUIs',
+            children: [
+              '/tutorials/7guis/counter',
+              '/tutorials/7guis/temperature',
+              '/tutorials/7guis/flight',
+              '/tutorials/7guis/timer'
+            ]
+          }
+        ]
+      },
+      {
         title: 'Recipes',
-        children: ['/recipes/react', '/recipes/vue', '/recipes/rxjs']
+        children: [
+          '/recipes/react',
+          '/recipes/vue',
+          '/recipes/rxjs',
+          '/recipes/ember'
+        ]
       },
       {
         title: 'Packages',
         children: [
           'packages/xstate-react/',
+          'packages/xstate-vue/',
           'packages/xstate-graph/',
           'packages/xstate-fsm/',
           'packages/xstate-test/',

@@ -15,7 +15,7 @@ const counterMachine = Machine<CounterContext>({
         INC: [
           {
             target: 'counting',
-            actions: assign(ctx => ({
+            actions: assign((ctx) => ({
               count: ctx.count + 1
             }))
           }
@@ -25,7 +25,7 @@ const counterMachine = Machine<CounterContext>({
             target: 'counting',
             actions: [
               assign({
-                count: ctx => ctx.count - 1
+                count: (ctx) => ctx.count - 1
               })
             ]
           }
@@ -77,7 +77,7 @@ const counterMachine = Machine<CounterContext>({
         SET_MAYBE: [
           {
             actions: [
-              assign({
+              assign<CounterContext>({
                 maybe: 'defined'
               })
             ]
@@ -297,9 +297,9 @@ describe('assign meta', () => {
   });
 
   it('should provide meta._event to assigner', () => {
-    type Ctx = {
+    interface Ctx {
       eventLog: Array<{ event: string; origin: string | undefined }>;
-    };
+    }
 
     const assignEventLog = assign<Ctx>((ctx, event, meta) => ({
       eventLog: ctx.eventLog.concat({
@@ -346,7 +346,7 @@ describe('assign meta', () => {
     let state: any;
 
     const service = interpret(parentMachine)
-      .onTransition(s => {
+      .onTransition((s) => {
         state = s;
       })
       .start();
@@ -357,9 +357,9 @@ describe('assign meta', () => {
     expect(state.context).toEqual({
       eventLog: [
         { event: 'PING_CHILD', origin: undefined },
-        { event: 'PONG', origin: 'child' },
+        { event: 'PONG', origin: expect.stringMatching(/.+/) },
         { event: 'PING_CHILD', origin: undefined },
-        { event: 'PONG', origin: 'child' }
+        { event: 'PONG', origin: expect.stringMatching(/.+/) }
       ]
     });
   });

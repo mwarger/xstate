@@ -2,11 +2,13 @@ import { matchesState } from './utils';
 import { mapState } from './mapState';
 import { StateNode } from './StateNode';
 import { State } from './State';
-import { Machine } from './Machine';
+import { Machine, createMachine } from './Machine';
+import { Actor } from './Actor';
 import {
   raise,
   send,
   sendParent,
+  sendUpdate,
   log,
   cancel,
   start,
@@ -15,7 +17,11 @@ import {
   after,
   done,
   respond,
-  doneInvoke
+  doneInvoke,
+  forwardTo,
+  escalate,
+  choose,
+  pure
 } from './actions';
 import { interpret, Interpreter, spawn } from './interpreter';
 import { matchState } from './match';
@@ -24,6 +30,7 @@ const actions = {
   raise,
   send,
   sendParent,
+  sendUpdate,
   log,
   cancel,
   start,
@@ -31,10 +38,15 @@ const actions = {
   assign,
   after,
   done,
-  respond
+  respond,
+  forwardTo,
+  escalate,
+  choose,
+  pure
 };
 
 export {
+  Actor,
   Machine,
   StateNode,
   State,
@@ -44,11 +56,14 @@ export {
   assign,
   send,
   sendParent,
+  sendUpdate,
+  forwardTo,
   interpret,
   Interpreter,
   matchState,
   spawn,
-  doneInvoke
+  doneInvoke,
+  createMachine
 };
 
 export * from './types';

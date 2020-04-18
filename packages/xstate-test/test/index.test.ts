@@ -3,7 +3,35 @@ import { createModel } from '../src';
 import { Machine, assign } from 'xstate';
 import stripAnsi from 'strip-ansi';
 
-const dieHardMachine = Machine<{ three: number; five: number }>(
+interface DieHardContext {
+  three: number;
+  five: number;
+}
+
+const pour3to5 = assign<DieHardContext>((ctx) => {
+  const poured = Math.min(5 - ctx.five, ctx.three);
+
+  return {
+    three: ctx.three - poured,
+    five: ctx.five + poured
+  };
+});
+const pour5to3 = assign<DieHardContext>((ctx) => {
+  const poured = Math.min(3 - ctx.three, ctx.five);
+
+  const res = {
+    three: ctx.three + poured,
+    five: ctx.five - poured
+  };
+
+  return res;
+});
+const fill3 = assign<DieHardContext>({ three: 3 });
+const fill5 = assign<DieHardContext>({ five: 5 });
+const empty3 = assign<DieHardContext>({ three: 0 });
+const empty5 = assign<DieHardContext>({ five: 0 });
+
+const dieHardMachine = Machine<DieHardContext>(
   {
     id: 'dieHard',
     initial: 'pending',
@@ -16,26 +44,26 @@ const dieHardMachine = Machine<{ three: number; five: number }>(
             cond: 'weHave4Gallons'
           },
           POUR_3_TO_5: {
-            actions: 'pour3to5'
+            actions: pour3to5
           },
           POUR_5_TO_3: {
-            actions: 'pour5to3'
+            actions: pour5to3
           },
           FILL_3: {
-            actions: 'fill3'
+            actions: fill3
           },
           FILL_5: {
-            actions: 'fill5'
+            actions: fill5
           },
           EMPTY_3: {
-            actions: 'empty3'
+            actions: empty3
           },
           EMPTY_5: {
-            actions: 'empty5'
+            actions: empty5
           }
         },
         meta: {
-          description: state => {
+          description: (state) => {
             return `pending with (${state.context.three}, ${state.context.five})`;
           },
           test: async ({ jugs }, state) => {
@@ -57,32 +85,8 @@ const dieHardMachine = Machine<{ three: number; five: number }>(
     }
   },
   {
-    actions: {
-      pour3to5: assign(ctx => {
-        const poured = Math.min(5 - ctx.five, ctx.three);
-
-        return {
-          three: ctx.three - poured,
-          five: ctx.five + poured
-        };
-      }),
-      pour5to3: assign(ctx => {
-        const poured = Math.min(3 - ctx.three, ctx.five);
-
-        const res = {
-          three: ctx.three + poured,
-          five: ctx.five - poured
-        };
-
-        return res;
-      }),
-      fill3: assign({ three: 3 }),
-      fill5: assign({ five: 5 }),
-      empty3: assign({ three: 0 }),
-      empty5: assign({ five: 0 })
-    },
     guards: {
-      weHave4Gallons: ctx => ctx.five === 4
+      weHave4Gallons: (ctx) => ctx.five === 4
     }
   }
 );
@@ -153,9 +157,9 @@ const dieHardModel = createModel<{ jugs: Jugs }>(dieHardMachine).withEvents({
 describe('testing a model (shortestPathsTo)', () => {
   dieHardModel
     .getShortestPathPlansTo('success') // ...
-    .forEach(plan => {
+    .forEach((plan) => {
       describe(plan.description, () => {
-        plan.paths.forEach(path => {
+        plan.paths.forEach((path) => {
           it(path.description, () => {
             const testJugs = new Jugs();
             return path.test({ jugs: testJugs });
@@ -168,11 +172,11 @@ describe('testing a model (shortestPathsTo)', () => {
 describe('testing a model (simplePathsTo)', () => {
   dieHardModel
     .getSimplePathPlansTo('success') // ...
-    .forEach(plan => {
+    .forEach((plan) => {
       describe(`reaches state ${JSON.stringify(
         plan.state.value
       )} (${JSON.stringify(plan.state.context)})`, () => {
-        plan.paths.forEach(path => {
+        plan.paths.forEach((path) => {
           it(path.description, () => {
             const testJugs = new Jugs();
             return path.test({ jugs: testJugs });
@@ -183,15 +187,15 @@ describe('testing a model (simplePathsTo)', () => {
 });
 
 describe('path.test()', () => {
-  const plans = dieHardModel.getSimplePathPlansTo(state => {
+  const plans = dieHardModel.getSimplePathPlansTo((state) => {
     return state.matches('success') && state.context.three === 0;
   });
 
-  plans.forEach(plan => {
+  plans.forEach((plan) => {
     describe(`reaches state ${JSON.stringify(
       plan.state.value
     )} (${JSON.stringify(plan.state.context)})`, () => {
-      plan.paths.forEach(path => {
+      plan.paths.forEach((path) => {
         describe(path.description, () => {
           it(`reaches the target state`, () => {
             const testJugs = new Jugs();
@@ -230,8 +234,8 @@ describe('error path trace', () => {
       }
     });
 
-    testModel.getShortestPathPlansTo('third').forEach(plan => {
-      plan.paths.forEach(path => {
+    testModel.getShortestPathPlansTo('third').forEach((plan) => {
+      plan.paths.forEach((path) => {
         it('should show an error path trace', async () => {
           try {
             await path.test(undefined);
@@ -320,6 +324,66 @@ describe('coverage', () => {
         expect.stringContaining('missing.third.three')
       );
     }
+  });
+
+  it('skips filtered states (filter option)', async () => {
+    const TestBug = Machine({
+      id: 'testbug',
+      initial: 'idle',
+      context: {
+        retries: 0
+      },
+      states: {
+        idle: {
+          on: {
+            START: 'passthrough'
+          },
+          meta: {
+            test: () => {
+              /* ... */
+            }
+          }
+        },
+        passthrough: {
+          on: {
+            '': 'end'
+          }
+        },
+        end: {
+          type: 'final',
+          meta: {
+            test: () => {
+              /* ... */
+            }
+          }
+        }
+      }
+    });
+
+    const testModel = createModel(TestBug).withEvents({
+      START: () => {
+        /* ... */
+      }
+    });
+
+    const testPlans = testModel.getShortestPathPlans();
+
+    const promises: any[] = [];
+    testPlans.forEach((plan) => {
+      plan.paths.forEach(() => {
+        promises.push(plan.test(undefined));
+      });
+    });
+
+    await Promise.all(promises);
+
+    expect(() => {
+      testModel.testCoverage({
+        filter: (stateNode) => {
+          return !!stateNode.meta;
+        }
+      });
+    }).not.toThrow();
   });
 });
 
@@ -464,7 +528,7 @@ describe('state limiting', () => {
           on: {
             INC: {
               actions: assign({
-                count: ctx => ctx.count + 1
+                count: (ctx) => ctx.count + 1
               })
             }
           }
@@ -474,7 +538,7 @@ describe('state limiting', () => {
 
     const testModel = createModel(machine);
     const testPlans = testModel.getShortestPathPlans({
-      filter: state => {
+      filter: (state) => {
         return state.context.count < 5;
       }
     });
@@ -519,7 +583,13 @@ describe('plan description', () => {
               description: 'two description'
             }
           }
+        },
+        on: {
+          NEXT: 'noMetaDescription'
         }
+      },
+      noMetaDescription: {
+        meta: {}
       }
     }
   });
@@ -528,7 +598,7 @@ describe('plan description', () => {
   const testPlans = testModel.getShortestPathPlans();
 
   it('should give a description for every plan', () => {
-    const planDescriptions = testPlans.map(plan => plan.description);
+    const planDescriptions = testPlans.map((plan) => plan.description);
 
     expect(planDescriptions).toMatchInlineSnapshot(`
       Array [
@@ -536,6 +606,7 @@ describe('plan description', () => {
         "reaches state: \\"#test.compound.child\\" ({\\"count\\":0})",
         "reaches state: \\"child with meta\\" ({\\"count\\":0})",
         "reaches states: \\"#test.parallel.one\\", \\"two description\\" ({\\"count\\":0})",
+        "reaches state: \\"noMetaDescription\\" ({\\"count\\":0})",
       ]
     `);
   });

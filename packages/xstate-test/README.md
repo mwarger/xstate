@@ -122,10 +122,6 @@ Creates an abstract testing model based on the `machine` passed in.
 | `machine`  | StateMachine     | The machine used to create the abstract model. |
 | `options?` | TestModelOptions | Options to customize the abstract model        |
 
-**Options**
-
-- `events` ()
-
 **Returns**
 
 A `TestModel` instance.
@@ -157,9 +153,51 @@ const toggleModel = createModel(toggleMachine).withEvents({
 
 Returns an array of testing plans based on the shortest paths from the test model's initial state to every other reachable state.
 
+**Options**
+
+- `filter` (function): A function that takes in the `state` and returns `true` if the state should be traversed, or `false` if traversal should stop.
+
+This is useful for preventing infinite traversals and stack overflow errors:
+
+```js
+const todosModel = createModel(todosMachine).withEvents({
+  /* ... */
+});
+
+const plans = todosModel.getShortestPathPlans({
+  // Tell the algorithm to limit state/event adjacency map to states
+  // that have less than 5 todos
+  filter: state => state.context.todos.length < 5
+});
+```
+
 ### `testModel.getSimplePathPlans(options?)`
 
 Returns an array of testing plans based on the simple paths from the test model's initial state to every other reachable state.
+
+**Options**
+
+| Argument | Type     | Description                                                                                                    |
+| -------- | -------- | -------------------------------------------------------------------------------------------------------------- |
+| `filter` | function | Takes in the `state` and returns `true` if the state should be traversed, or `false` if traversal should stop. |
+
+### `testModel.testCoverage(options?)`
+
+Tests that all state nodes were covered (traversed) in the exected tests.
+
+**_Options_**
+
+| Argument | Type     | Description                                                                               |
+| -------- | -------- | ----------------------------------------------------------------------------------------- |
+| `filter` | function | Takes in each `stateNode` and returns `true` if that state node should have been covered. |
+
+```js
+// Only test coverage for state nodes with a `.meta` property defined:
+
+testModel.testCoverage({
+  filter: stateNode => !!stateNode.meta
+});
+```
 
 ### `testPlan.description`
 

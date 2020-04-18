@@ -29,7 +29,10 @@ import {
   LogAction,
   LogActionObject,
   DelayFunctionMap,
-  SCXML
+  SCXML,
+  ExprWithMeta,
+  ChooseConditon,
+  ChooseAction
 } from './types';
 import * as actionTypes from './actionTypes';
 import {
@@ -37,9 +40,19 @@ import {
   isFunction,
   isString,
   toEventObject,
-  toSCXMLEvent
+  toSCXMLEvent,
+  partition,
+  flatten,
+  updateContext,
+  warn,
+  toGuard,
+  evaluateGuard,
+  toArray
 } from './utils';
 import { isArray } from './utils';
+import { State } from './State';
+import { StateNode } from './StateNode';
+import { IS_PRODUCTION } from './environment';
 
 export { actionTypes };
 
@@ -95,9 +108,9 @@ export function toActionObject<TContext, TEvent extends EventObject>(
         type,
         ...exec,
         ...other
-      };
+      } as ActionObject<TContext, TEvent>;
     } else {
-      actionObject = action;
+      actionObject = action as ActionObject<TContext, TEvent>;
     }
   }
 
@@ -120,7 +133,9 @@ export const toActionObjects = <TContext, TEvent extends EventObject>(
 
   const actions = isArray(action) ? action : [action];
 
-  return actions.map(subAction => toActionObject(subAction, actionFunctionMap));
+  return actions.map((subAction) =>
+    toActionObject(subAction, actionFunctionMap)
+  );
 };
 
 export function toActivityDefinition<TContext, TEvent extends EventObject>(
@@ -170,7 +185,7 @@ export function resolveRaise<TEvent extends EventObject>(
  * @param options Options to pass into the send event:
  *  - `id` - The unique send event identifier (used with `cancel()`).
  *  - `delay` - The number of milliseconds to delay the sending of the event.
- *  - `target` - The target of this event (by default, the machine the event was sent from).
+ *  - `to` - The target of this event (by default, the machine the event was sent from).
  */
 export function send<TContext, TEvent extends EventObject>(
   event: Event<TEvent> | SendExpr<TContext, TEvent>,
@@ -239,7 +254,7 @@ export function resolveSend<TContext, TEvent extends EventObject>(
  * @param options Options to pass into the send event.
  */
 export function sendParent<TContext, TEvent extends EventObject>(
-  event: Event<TEvent> | SendExpr<TContext, TEvent>,
+  event: Event<any> | SendExpr<TContext, TEvent>,
   options?: SendActionOptions<TContext, TEvent>
 ): SendAction<TContext, TEvent> {
   return send<TContext, TEvent>(event, {
@@ -443,7 +458,7 @@ export function error(id: string, data?: any): ErrorPlatformEvent & string {
 
   eventObject.toString = () => type;
 
-  return eventObject as (ErrorPlatformEvent & string);
+  return eventObject as ErrorPlatformEvent & string;
 }
 
 export function pure<TContext, TEvent extends EventObject>(
@@ -462,7 +477,7 @@ export function pure<TContext, TEvent extends EventObject>(
  * Forwards (sends) an event to a specified service.
  *
  * @param target The target service to forward the event to.
- * @param options Options to pass into the send event.
+ * @param options Options to pass into the send action creator.
  */
 export function forwardTo<TContext, TEvent extends EventObject>(
   target: Required<SendActionOptions<TContext, TEvent>>['to'],
@@ -472,4 +487,147 @@ export function forwardTo<TContext, TEvent extends EventObject>(
     ...options,
     to: target
   });
+}
+
+/**
+ * Escalates an error by sending it as an event to this machine's parent.
+ *
+ * @param errorData The error data to send, or the expression function that
+ * takes in the `context`, `event`, and `meta`, and returns the error data to send.
+ * @param options Options to pass into the send action creator.
+ */
+export function escalate<
+  TContext,
+  TEvent extends EventObject,
+  TErrorData = any
+>(
+  errorData: TErrorData | ExprWithMeta<TContext, TEvent, TErrorData>,
+  options?: SendActionOptions<TContext, TEvent>
+): SendAction<TContext, TEvent> {
+  return sendParent<TContext, TEvent>(
+    (context, event, meta) => {
+      return {
+        type: actionTypes.error,
+        data: isFunction(errorData)
+          ? errorData(context, event, meta)
+          : errorData
+      };
+    },
+    {
+      ...options,
+      to: SpecialTargets.Parent
+    }
+  );
+}
+
+export function choose<TContext, TEvent extends EventObject>(
+  conds: Array<ChooseConditon<TContext, TEvent>>
+): ChooseAction<TContext, TEvent> {
+  return {
+    type: ActionTypes.Choose,
+    conds
+  };
+}
+
+export function resolveActions<TContext, TEvent extends EventObject>(
+  machine: StateNode<TContext, any, TEvent>,
+  currentState: State<TContext, TEvent> | undefined,
+  currentContext: TContext,
+  _event: SCXML.Event<TEvent>,
+  actions: Array<ActionObject<TContext, TEvent>>
+): [Array<ActionObject<TContext, TEvent>>, TContext] {
+  const [assignActions, otherActions] = partition(
+    actions,
+    (action): action is AssignAction<TContext, TEvent> =>
+      action.type === actionTypes.assign
+  );
+
+  let updatedContext = assignActions.length
+    ? updateContext(currentContext, _event, assignActions, currentState)
+    : currentContext;
+
+  const resolvedActions = flatten(
+    otherActions.map((actionObject) => {
+      switch (actionObject.type) {
+        case actionTypes.raise:
+          return resolveRaise(actionObject as RaiseAction<TEvent>);
+        case actionTypes.send:
+          const sendAction = resolveSend(
+            actionObject as SendAction<TContext, TEvent>,
+            updatedContext,
+            _event,
+            machine.options.delays
+          ) as ActionObject<TContext, TEvent>; // TODO: fix ActionTypes.Init
+
+          if (!IS_PRODUCTION) {
+            // warn after resolving as we can create better contextual message here
+            warn(
+              !isString(actionObject.delay) ||
+                typeof sendAction.delay === 'number',
+              // tslint:disable-next-line:max-line-length
+              `No delay reference for delay expression '${actionObject.delay}' was found on machine '${machine.id}'`
+            );
+          }
+
+          return sendAction;
+        case actionTypes.log:
+          return resolveLog(
+            actionObject as LogAction<TContext, TEvent>,
+            updatedContext,
+            _event
+          );
+        case actionTypes.choose: {
+          const chooseAction = actionObject as ChooseAction<TContext, TEvent>;
+          const matchedActions = chooseAction.conds.find((condition) => {
+            const guard = toGuard(condition.cond, machine.options.guards);
+            return (
+              !guard ||
+              evaluateGuard(
+                machine,
+                guard,
+                updatedContext,
+                _event,
+                currentState as any
+              )
+            );
+          })?.actions;
+
+          if (!matchedActions) {
+            return [];
+          }
+
+          const resolved = resolveActions(
+            machine,
+            currentState,
+            updatedContext,
+            _event,
+            toActionObjects(toArray(matchedActions))
+          );
+          updatedContext = resolved[1];
+          return resolved[0];
+        }
+        case actionTypes.pure: {
+          const matchedActions = (actionObject as PureAction<
+            TContext,
+            TEvent
+          >).get(updatedContext, _event.data);
+          if (!matchedActions) {
+            return [];
+          }
+          const resolved = resolveActions(
+            machine,
+            currentState,
+            updatedContext,
+            _event,
+            toActionObjects(toArray(matchedActions))
+          );
+          updatedContext = resolved[1];
+          return resolved[0];
+        }
+        default:
+          return toActionObject(actionObject, machine.options.actions);
+      }
+    })
+  );
+  return [resolvedActions, updatedContext];
 }

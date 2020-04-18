@@ -49,6 +49,7 @@ export type Event<TEvent extends EventObject> = TEvent['type'] | TEvent;
 export interface ActionMeta<TContext, TEvent extends EventObject>
   extends StateMeta<TContext, TEvent> {
   action: ActionObject<TContext, TEvent>;
+  _event: SCXML.Event<TEvent>;
 }
 
 export interface AssignMeta<TContext, TEvent extends EventObject> {
@@ -63,12 +64,20 @@ export type ActionFunction<TContext, TEvent extends EventObject> = (
   meta: ActionMeta<TContext, TEvent>
 ) => any | void;
 
-// export type InternalAction<TContext> = SendAction | AssignAction<TContext>;
-export type Action<TContext, TEvent extends EventObject> =
+export interface ChooseConditon<TContext, TEvent extends EventObject> {
+  cond?: Condition<TContext, TEvent>;
+  actions: Actions<TContext, TEvent>;
+}
+
+export // export type InternalAction<TContext> = SendAction | AssignAction<TContext>;
+type Action<TContext, TEvent extends EventObject> =
   | ActionType
   | ActionObject<TContext, TEvent>
   | ActionFunction<TContext, TEvent>
-  | AssignAction<Required<TContext>, TEvent>;
+  | AssignAction<Required<TContext>, TEvent>
+  | SendAction<TContext, AnyEventObject>
+  | RaiseAction<AnyEventObject>
+  | ChooseAction<TContext, TEvent>;
 
 export type Actions<TContext, TEvent extends EventObject> = SingleOrArray<
   Action<TContext, TEvent>
@@ -120,9 +129,9 @@ export interface GuardPredicate<TContext, TEvent extends EventObject> {
 
 export type Guard<TContext, TEvent extends EventObject> =
   | GuardPredicate<TContext, TEvent>
-  | Record<string, any> & {
+  | (Record<string, any> & {
       type: string;
-    };
+    });
 
 export interface GuardMeta<TContext, TEvent extends EventObject>
   extends StateMeta<TContext, TEvent> {
@@ -134,9 +143,10 @@ export type Condition<TContext, TEvent extends EventObject> =
   | ConditionPredicate<TContext, TEvent>
   | Guard<TContext, TEvent>;
 
-export type TransitionTarget<TContext> = SingleOrArray<
-  string | StateNode<TContext, any>
->;
+export type TransitionTarget<
+  TContext,
+  TEvent extends EventObject
+> = SingleOrArray<string | StateNode<TContext, any, TEvent>>;
 
 export type TransitionTargets<TContext> = Array<
   string | StateNode<TContext, any>
@@ -147,13 +157,13 @@ export interface TransitionConfig<TContext, TEvent extends EventObject> {
   actions?: Actions<TContext, TEvent>;
   in?: StateValue;
   internal?: boolean;
-  target?: TransitionTarget<TContext>;
+  target?: TransitionTarget<TContext, TEvent>;
   meta?: Record<string, any>;
 }
 
 export interface TargetTransitionConfig<TContext, TEvent extends EventObject>
   extends TransitionConfig<TContext, TEvent> {
-  target: TransitionTarget<TContext>; // TODO: just make this non-optional
+  target: TransitionTarget<TContext, TEvent>; // TODO: just make this non-optional
 }
 
 export type ConditionalTransitionConfig<
@@ -189,8 +199,8 @@ export type Receiver<TEvent extends EventObject> = (
 ) => void;
 
 export type InvokeCallback = (
-  sender: Sender<any>,
-  onEvent: Receiver<EventObject>
+  callback: Sender<any>,
+  onReceive: Receiver<EventObject>
 ) => any;
 
 /**
@@ -201,14 +211,18 @@ export type InvokeCallback = (
  * - `done.invoke.<id>` with the `data` containing the resolved payload when the promise resolves, or:
  * - `error.platform.<id>` with the `data` containing the caught error, and `src` containing the service `id`.
  *
- * For callback handlers, the `sender` will be provided, which will send events to the parent service.
+ * For callback handlers, the `callback` will be provided, which will send events to the parent service.
  *
  * @param context The current machine `context`
  * @param event The event that invoked the service
  */
-export type InvokeCreator<TContext, TFinalContext = any> = (
+export type InvokeCreator<
+  TContext,
+  TEvent = AnyEventObject,
+  TFinalContext = any
+> = (
   context: TContext,
-  event: EventObject
+  event: TEvent
 ) =>
   | PromiseLike<TFinalContext>
   | StateMachine<TFinalContext, any, any>
@@ -307,32 +321,40 @@ export type StatesDefinition<
   >;
 };
 
-export type TransitionConfigTargetShortcut<
+export type TransitionConfigTarget<TContext, TEvent extends EventObject> =
+  | string
+  | undefined
+  | StateNode<TContext, any, TEvent>;
+
+export type TransitionConfigOrTarget<
   TContext,
   TEvent extends EventObject
-> = string | undefined | StateNode<TContext, any, TEvent>;
+> = SingleOrArray<
+  TransitionConfigTarget<TContext, TEvent> | TransitionConfig<TContext, TEvent>
+>;
 
 type TransitionsConfigMap<TContext, TEvent extends EventObject> = {
-  [K in TEvent['type'] | NullEvent['type'] | '*']?: SingleOrArray<
-    | TransitionConfigTargetShortcut<TContext, TEvent>
-    | (TransitionConfig<
-        TContext,
-        K extends TEvent['type'] ? Extract<TEvent, { type: K }> : EventObject
-      > & {
-        event?: undefined;
-      })
+  [K in TEvent['type']]?: TransitionConfigOrTarget<
+    TContext,
+    TEvent extends { type: K } ? TEvent : never
   >;
+} & {
+  ''?: TransitionConfigOrTarget<TContext, TEvent>;
+} & {
+  '*'?: TransitionConfigOrTarget<TContext, TEvent>;
 };
 
 type TransitionsConfigArray<TContext, TEvent extends EventObject> = Array<
-  {
-    [K in TEvent['type'] | NullEvent['type'] | '*']: TransitionConfig<
-      TContext,
-      K extends TEvent['type'] ? Extract<TEvent, { type: K }> : EventObject
-    > & {
-      event: K;
-    };
-  }[TEvent['type'] | NullEvent['type'] | '*']
+  | {
+      [K in TEvent['type']]: TransitionConfig<
+        TContext,
+        TEvent extends { type: K } ? TEvent : never
+      > & {
+        event: K;
+      };
+    }[TEvent['type']]
+  | (TransitionConfig<TContext, TEvent> & { event: '' })
+  | (TransitionConfig<TContext, TEvent> & { event: '*' })
 >;
 
 export type TransitionsConfig<TContext, TEvent extends EventObject> =
@@ -349,7 +371,10 @@ export type InvokeConfig<TContext, TEvent extends EventObject> =
       /**
        * The source of the machine to be invoked, or the machine itself.
        */
-      src: string | StateMachine<any, any, any> | InvokeCreator<any, any>;
+      src:
+        | string
+        | StateMachine<any, any, any>
+        | InvokeCreator<TContext, TEvent, any>;
       /**
        * If `true`, events sent to the parent service will be forwarded to the invoked service.
        *
@@ -384,10 +409,6 @@ export type InvokeConfig<TContext, TEvent extends EventObject> =
     }
   | StateMachine<any, any, any>;
 
-export type InvokesConfig<TContext, TEvent extends EventObject> = SingleOrArray<
-  InvokeConfig<TContext, TEvent>
->;
-
 export interface StateNodeConfig<
   TContext,
   TStateSchema extends StateSchema,
@@ -418,8 +439,10 @@ export interface StateNodeConfig<
   type?: 'atomic' | 'compound' | 'parallel' | 'final' | 'history';
   /**
    * The initial context (extended state) of the machine.
+   *
+   * Can be an object or a function that returns an object.
    */
-  context?: TContext;
+  context?: TContext | (() => TContext);
   /**
    * Indicates whether the state node is a history state node, and what
    * type of history:
@@ -433,7 +456,7 @@ export interface StateNodeConfig<
   /**
    * The services to invoke upon entering this state node. These services will be stopped upon exiting this state node.
    */
-  invoke?: InvokesConfig<TContext, TEvent>;
+  invoke?: SingleOrArray<InvokeConfig<TContext, TEvent>>;
   /**
    * The mapping of event types to their potential transition(s).
    */
@@ -513,14 +536,15 @@ export interface StateNodeDefinition<
   id: string;
   version: string | undefined;
   key: string;
+  context: TContext;
   type: 'atomic' | 'compound' | 'parallel' | 'final' | 'history';
   initial: StateNodeConfig<TContext, TStateSchema, TEvent>['initial'];
   history: boolean | 'shallow' | 'deep' | undefined;
   states: StatesDefinition<TContext, TStateSchema, TEvent>;
   on: TransitionDefinitionMap<TContext, TEvent>;
   transitions: Array<TransitionDefinition<TContext, TEvent>>;
-  onEntry: Array<ActionObject<TContext, TEvent>>;
-  onExit: Array<ActionObject<TContext, TEvent>>;
+  entry: Array<ActionObject<TContext, TEvent>>;
+  exit: Array<ActionObject<TContext, TEvent>>;
   activities: Array<ActivityDefinition<TContext, TEvent>>;
   meta: any;
   order: number;
@@ -586,6 +610,14 @@ export interface MachineOptions<TContext, TEvent extends EventObject> {
   activities: Record<string, ActivityConfig<TContext, TEvent>>;
   services: Record<string, ServiceConfig<TContext>>;
   delays: DelayFunctionMap<TContext, TEvent>;
+  /**
+   * @private
+   */
+  _parent?: StateNode<TContext, any, TEvent>;
+  /**
+   * @private
+   */
+  _key?: string;
 }
 export interface MachineConfig<
   TContext,
@@ -595,7 +627,7 @@ export interface MachineConfig<
   /**
    * The initial context (extended state)
    */
-  context?: TContext;
+  context?: TContext | (() => TContext);
   /**
    * The machine's own version.
    */
@@ -631,8 +663,8 @@ export interface StateMachine<
   TContext,
   TStateSchema extends StateSchema,
   TEvent extends EventObject,
-  TState extends Typestate<TContext> = Typestate<TContext>
-> extends StateNode<TContext, TStateSchema, TEvent, TState> {
+  TTypestate extends Typestate<TContext> = any
+> extends StateNode<TContext, TStateSchema, TEvent, TTypestate> {
   id: string;
   states: StateNode<TContext, TStateSchema, TEvent>['states'];
 }
@@ -664,9 +696,9 @@ export interface ActivityMap {
 // tslint:disable-next-line:class-name
 export interface StateTransition<TContext, TEvent extends EventObject> {
   transitions: Array<TransitionDefinition<TContext, TEvent>>;
-  configuration: Array<StateNode<TContext>>;
-  entrySet: Array<StateNode<TContext>>;
-  exitSet: Array<StateNode<TContext>>;
+  configuration: Array<StateNode<TContext, any, TEvent>>;
+  entrySet: Array<StateNode<TContext, any, TEvent>>;
+  exitSet: Array<StateNode<TContext, any, TEvent>>;
   /**
    * The source state that preceded the transition.
    */
@@ -697,8 +729,10 @@ export enum ActionTypes {
   ErrorExecution = 'error.execution',
   ErrorCommunication = 'error.communication',
   ErrorPlatform = 'error.platform',
+  ErrorCustom = 'xstate.error',
   Update = 'xstate.update',
-  Pure = 'xstate.pure'
+  Pure = 'xstate.pure',
+  Choose = 'xstate.choose'
 }
 
 export interface RaiseAction<TEvent extends EventObject> {
@@ -876,9 +910,15 @@ export interface PureAction<TContext, TEvent extends EventObject>
   ) => SingleOrArray<ActionObject<TContext, TEvent>> | undefined;
 }
 
+export interface ChooseAction<TContext, TEvent extends EventObject>
+  extends ActionObject<TContext, TEvent> {
+  type: ActionTypes.Choose;
+  conds: Array<ChooseConditon<TContext, TEvent>>;
+}
+
 export interface TransitionDefinition<TContext, TEvent extends EventObject>
   extends TransitionConfig<TContext, TEvent> {
-  target: Array<StateNode<TContext>> | undefined;
+  target: Array<StateNode<TContext, any, TEvent>> | undefined;
   source: StateNode<TContext, any, TEvent>;
   actions: Array<ActionObject<TContext, TEvent>>;
   cond?: Guard<TContext, TEvent>;
@@ -986,15 +1026,17 @@ export interface StateConfig<TContext, TEvent extends EventObject> {
   value: StateValue;
   context: TContext;
   _event: SCXML.Event<TEvent>;
+  _sessionid: string | null;
   historyValue?: HistoryValue | undefined;
   history?: State<TContext, TEvent>;
   actions?: Array<ActionObject<TContext, TEvent>>;
   activities?: ActivityMap;
   meta?: any;
   events?: TEvent[];
-  configuration: Array<StateNode<TContext>>;
+  configuration: Array<StateNode<TContext, any, TEvent>>;
   transitions: Array<TransitionDefinition<TContext, TEvent>>;
   children: Record<string, Actor>;
+  done?: boolean;
 }
 
 export interface StateSchema<TC = any> {
@@ -1109,3 +1151,15 @@ export interface Subscribable<T> {
     complete?: () => void
   ): Unsubscribable;
 }
+
+export interface Observer<T> {
+  next: (value: T) => void;
+  error: (err: any) => void;
+  complete: () => void;
+}
+
+export type Spawnable =
+  | StateMachine<any, any, any>
+  | Promise<any>
+  | InvokeCallback
+  | Subscribable<any>;

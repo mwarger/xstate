@@ -14,10 +14,10 @@ npm install xstate @xstate/graph
 
 ```js
 import { Machine } from 'xstate';
-import { simplePaths } from '@xstate/graph';
+import { getSimplePaths } from '@xstate/graph';
 
 const machine = Machine(/* ... */);
-const paths = simplePaths(machine);
+const paths = getSimplePaths(machine);
 ```
 
 ## API
@@ -47,7 +47,7 @@ Every path starts with the initial state.
 
 The overall object structure looks like this:
 
-```json
+```json5
 {
   "<SERIALIZED STATE>": {
     "state": State { ... },
@@ -169,7 +169,7 @@ Every path starts with the initial state.
 
 The overall object structure looks like this:
 
-```json
+```json5
 {
   "<SERIALIZED STATE>": {
     "state": State { ... },

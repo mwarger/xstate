@@ -5,7 +5,8 @@ import {
   sendParent,
   raise,
   doneInvoke,
-  sendUpdate
+  sendUpdate,
+  respond
 } from '../src/actions';
 import { Actor } from '../src/Actor';
 import { interval } from 'rxjs';
@@ -32,11 +33,11 @@ describe('spawning machines', () => {
   type TodoEvent =
     | {
         type: 'ADD';
-        id: string;
+        id: number;
       }
     | {
         type: 'SET_COMPLETE';
-        id: string;
+        id: number;
       }
     | {
         type: 'TODO_COMPLETED';
@@ -61,14 +62,14 @@ describe('spawning machines', () => {
         actions: assign({
           todoRefs: (ctx, e) => ({
             ...ctx.todoRefs,
-            [e.id as string]: spawn(todoMachine)
+            [e.id]: spawn(todoMachine)
           })
         })
       },
       SET_COMPLETE: {
         actions: send('SET_COMPLETE', {
           to: (ctx, e: Extract<TodoEvent, { type: 'SET_COMPLETE' }>) => {
-            return ctx.todoRefs[e.id as string];
+            return ctx.todoRefs[e.id];
           }
         })
       }
@@ -100,7 +101,7 @@ describe('spawning machines', () => {
   });
 
   interface ClientContext {
-    server?: Actor;
+    server?: Interpreter<any, any>;
   }
 
   const clientMachine = Machine<ClientContext, PingPongEvent>({
@@ -122,10 +123,7 @@ describe('spawning machines', () => {
         }
       },
       sendPing: {
-        entry: [
-          send('PING', { to: ctx => ctx.server as Actor }),
-          raise('SUCCESS')
-        ],
+        entry: [send('PING', { to: (ctx) => ctx.server! }), raise('SUCCESS')],
         on: {
           SUCCESS: 'waitPong'
         }
@@ -141,7 +139,7 @@ describe('spawning machines', () => {
     }
   });
 
-  it('should invoke actors', done => {
+  it('should invoke actors', (done) => {
     const service = interpret(todosMachine)
       .onDone(() => {
         done();
@@ -152,11 +150,22 @@ describe('spawning machines', () => {
     service.send('SET_COMPLETE', { id: 42 });
   });
 
+  it('should invoke actors (when sending batch)', (done) => {
+    const service = interpret(todosMachine)
+      .onDone(() => {
+        done();
+      })
+      .start();
+
+    service.send([{ type: 'ADD', id: 42 }]);
+    service.send('SET_COMPLETE', { id: 42 });
+  });
+
   it('should invoke a null actor if spawned outside of a service', () => {
     expect(spawn(todoMachine)).toBeTruthy();
   });
 
-  it('should allow bidirectional communication between parent/child actors', done => {
+  it('should allow bidirectional communication between parent/child actors', (done) => {
     interpret(clientMachine)
       .onDone(() => {
         done();
@@ -177,7 +186,7 @@ describe('spawning promises', () => {
         entry: assign({
           promiseRef: () => {
             const ref = spawn(
-              new Promise(res => {
+              new Promise((res) => {
                 res('response');
               }),
               'my-promise'
@@ -189,7 +198,7 @@ describe('spawning promises', () => {
         on: {
           [doneInvoke('my-promise')]: {
             target: 'success',
-            cond: (_, e) => (e as any).data === 'response'
+            cond: (_, e) => e.data === 'response'
           }
         }
       },
@@ -199,7 +208,7 @@ describe('spawning promises', () => {
     }
   });
 
-  it('should be able to spawn a promise', done => {
+  it('should be able to spawn a promise', (done) => {
     const promiseService = interpret(promiseMachine).onDone(() => {
       done();
     });
@@ -220,7 +229,7 @@ describe('spawning callbacks', () => {
         entry: assign({
           callbackRef: () =>
             spawn((cb, receive) => {
-              receive(event => {
+              receive((event) => {
                 if (event.type === 'START') {
                   setTimeout(() => {
                     cb('SEND_BACK');
@@ -230,7 +239,9 @@ describe('spawning callbacks', () => {
             })
         }),
         on: {
-          START_CB: { actions: send('START', { to: ctx => ctx.callbackRef }) },
+          START_CB: {
+            actions: send('START', { to: (ctx) => ctx.callbackRef })
+          },
           SEND_BACK: 'success'
         }
       },
@@ -240,7 +251,7 @@ describe('spawning callbacks', () => {
     }
   });
 
-  it('should be able to spawn an actor from a callback', done => {
+  it('should be able to spawn an actor from a callback', (done) => {
     const callbackService = interpret(callbackMachine).onDone(() => {
       done();
     });
@@ -268,7 +279,7 @@ describe('spawning observables', () => {
           observableRef: () => {
             const ref = spawn(
               interval(10).pipe(
-                map(n => ({
+                map((n) => ({
                   type: 'INT',
                   value: n
                 }))
@@ -291,12 +302,105 @@ describe('spawning observables', () => {
     }
   });
 
-  it('should be able to spawn an observable', done => {
+  it('should be able to spawn an observable', (done) => {
     const observableService = interpret(observableMachine).onDone(() => {
       done();
     });
 
     observableService.start();
+  });
+});
+
+describe('communicating with spawned actors', () => {
+  it('should treat an interpreter as an actor', (done) => {
+    const existingMachine = Machine({
+      initial: 'inactive',
+      states: {
+        inactive: {
+          on: { ACTIVATE: 'active' }
+        },
+        active: {
+          entry: respond('EXISTING.DONE')
+        }
+      }
+    });
+
+    const existingService = interpret(existingMachine).start();
+
+    const parentMachine = Machine<any>({
+      initial: 'pending',
+      context: {
+        existingRef: undefined as any
+      },
+      states: {
+        pending: {
+          entry: assign({
+            // No need to spawn an existing service:
+            // existingRef: () => spawn(existingService)
+            existingRef: existingService
+          }),
+          on: {
+            'EXISTING.DONE': 'success'
+          },
+          after: {
+            100: {
+              actions: send('ACTIVATE', { to: (ctx) => ctx.existingRef })
+            }
+          }
+        },
+        success: {
+          type: 'final'
+        }
+      }
+    });
+
+    const parentService = interpret(parentMachine).onDone(() => {
+      done();
+    });
+
+    parentService.start();
+  });
+
+  it('should be able to communicate with arbitrary actors if sessionId is known', (done) => {
+    const existingMachine = Machine({
+      initial: 'inactive',
+      states: {
+        inactive: {
+          on: { ACTIVATE: 'active' }
+        },
+        active: {
+          entry: respond('EXISTING.DONE')
+        }
+      }
+    });
+
+    const existingService = interpret(existingMachine).start();
+
+    const parentMachine = Machine<any>({
+      initial: 'pending',
+      states: {
+        pending: {
+          entry: send('ACTIVATE', { to: existingService.sessionId }),
+          on: {
+            'EXISTING.DONE': 'success'
+          },
+          after: {
+            100: {
+              actions: send('ACTIVATE', { to: (ctx) => ctx.existingRef })
+            }
+          }
+        },
+        success: {
+          type: 'final'
+        }
+      }
+    });
+
+    const parentService = interpret(parentMachine).onDone(() => {
+      done();
+    });
+
+    parentService.start();
   });
 });
 
@@ -314,10 +418,10 @@ describe('actors', () => {
       states: {
         start: {
           entry: assign({
-            refs: ctx => {
+            refs: (ctx) => {
               count++;
-              const c = ctx.items.map(item =>
-                spawn(new Promise(res => res(item)))
+              const c = ctx.items.map((item) =>
+                spawn(new Promise((res) => res(item)))
               );
 
               return c;
@@ -335,7 +439,7 @@ describe('actors', () => {
   });
 
   it('should spawn null actors if not used within a service', () => {
-    const nullActorMachine = Machine<{ ref: undefined | Actor }>({
+    const nullActorMachine = Machine<{ ref?: Actor }>({
       initial: 'foo',
       context: { ref: undefined },
       states: {
@@ -408,7 +512,8 @@ describe('actors', () => {
         initial: 'initial',
         states: {
           initial: {
-            entry: assign((): { serverRef: Actor } => ({
+            entry: assign((ctx) => ({
+              ...ctx,
               serverRef: spawn(pongActorMachine, { autoForward: false })
             })),
             on: {
@@ -495,10 +600,10 @@ describe('actors', () => {
     });
 
     it('should sync spawned actor state when { sync: true }', () => {
-      return new Promise(res => {
+      return new Promise((res) => {
         const service = interpret(parentMachine, {
           id: 'a-service'
-        }).onTransition(s => {
+        }).onTransition((s) => {
           if (s.context.ref.state.context.value === 42) {
             res();
           }
@@ -511,7 +616,7 @@ describe('actors', () => {
       return new Promise((res, rej) => {
         const service = interpret(parentMachine, {
           id: 'b-service'
-        }).onTransition(s => {
+        }).onTransition((s) => {
           if (s.context.refNoSync.state.context.value === 42) {
             rej(new Error('value change caused transition'));
           }
@@ -529,7 +634,7 @@ describe('actors', () => {
       return new Promise((res, rej) => {
         const service = interpret(parentMachine, {
           id: 'c-service'
-        }).onTransition(s => {
+        }).onTransition((s) => {
           if (s.context.refNoSyncDefault.state.context.value === 42) {
             rej(new Error('value change caused transition'));
           }
@@ -545,7 +650,7 @@ describe('actors', () => {
       });
     });
 
-    it('parent state should be changed if synced child actor update occurs', done => {
+    it('parent state should be changed if synced child actor update occurs', (done) => {
       const syncChildMachine = Machine({
         initial: 'active',
         states: {
@@ -557,7 +662,7 @@ describe('actors', () => {
       });
 
       interface SyncMachineContext {
-        ref?: Actor;
+        ref?: Interpreter<any, any>;
       }
 
       const syncMachine = Machine<SyncMachineContext>({
@@ -565,7 +670,7 @@ describe('actors', () => {
         context: {},
         states: {
           same: {
-            entry: assign({
+            entry: assign<SyncMachineContext>({
               ref: () => spawn(syncChildMachine, { sync: true })
             })
           }
@@ -573,10 +678,10 @@ describe('actors', () => {
       });
 
       interpret(syncMachine)
-        .onTransition(state => {
+        .onTransition((state) => {
           if (
             state.context.ref &&
-            (state.context.ref as Interpreter<any>).state.matches('inactive')
+            state.context.ref.state.matches('inactive')
           ) {
             expect(state.changed).toBe(true);
             done();
@@ -587,10 +692,10 @@ describe('actors', () => {
 
     const falseSyncOptions = [{}, { sync: false }];
 
-    falseSyncOptions.forEach(falseSyncOption => {
+    falseSyncOptions.forEach((falseSyncOption) => {
       it(`parent state should NOT be changed regardless of unsynced child actor update (options: ${JSON.stringify(
         falseSyncOption
-      )})`, done => {
+      )})`, (done) => {
         const syncChildMachine = Machine({
           initial: 'active',
           states: {
@@ -602,7 +707,7 @@ describe('actors', () => {
         });
 
         interface SyncMachineContext {
-          ref?: Actor;
+          ref?: Interpreter<any, any>;
         }
 
         const syncMachine = Machine<SyncMachineContext>({
@@ -618,10 +723,10 @@ describe('actors', () => {
         });
 
         const service = interpret(syncMachine)
-          .onTransition(state => {
+          .onTransition((state) => {
             if (
               state.context.ref &&
-              (state.context.ref as Interpreter<any>).state.matches('inactive')
+              state.context.ref.state.matches('inactive')
             ) {
               expect(state.changed).toBe(false);
             }
@@ -629,18 +734,16 @@ describe('actors', () => {
           .start();
 
         setTimeout(() => {
-          expect(
-            (service.state.context.ref! as Interpreter<any>).state.matches(
-              'inactive'
-            )
-          ).toBe(true);
+          expect(service.state.context.ref!.state.matches('inactive')).toBe(
+            true
+          );
           done();
         }, 20);
       });
 
       it(`parent state should be changed if unsynced child actor manually sends update event (options: ${JSON.stringify(
         falseSyncOption
-      )})`, done => {
+      )})`, (done) => {
         const syncChildMachine = Machine({
           initial: 'active',
           states: {
@@ -654,7 +757,7 @@ describe('actors', () => {
         });
 
         interface SyncMachineContext {
-          ref?: Actor;
+          ref?: Interpreter<any, any>;
         }
 
         const syncMachine = Machine<SyncMachineContext>({
@@ -670,10 +773,10 @@ describe('actors', () => {
         });
 
         interpret(syncMachine)
-          .onTransition(state => {
+          .onTransition((state) => {
             if (
               state.context.ref &&
-              (state.context.ref as Interpreter<any>).state.matches('inactive')
+              state.context.ref.state.matches('inactive')
             ) {
               expect(state.changed).toBe(true);
               done();

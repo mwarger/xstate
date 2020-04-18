@@ -1,7 +1,12 @@
-import { getShortestPaths, getSimplePaths, getStateNodes } from '@xstate/graph';
+import {
+  getShortestPaths,
+  getSimplePaths,
+  getStateNodes,
+  StatePathsMap,
+  ValueAdjMapOptions
+} from '@xstate/graph';
 import { StateMachine, EventObject, State, StateValue } from 'xstate';
-import { StatePathsMap } from '@xstate/graph/lib/types';
-import chalk from 'chalk';
+import slimChalk from './slimChalk';
 import {
   TestModelCoverage,
   TestModelOptions,
@@ -10,9 +15,9 @@ import {
   TestPathResult,
   TestSegmentResult,
   TestMeta,
-  EventExecutor
+  EventExecutor,
+  CoverageOptions
 } from './types';
-import { ValueAdjMapOptions } from '@xstate/graph/lib/graph';
 
 /**
  * Creates a test model that represents an abstract model of a
@@ -92,8 +97,8 @@ export class TestModel<TTestContext, TContext> {
   ): Array<TestPlan<TTestContext, TContext>> {
     const predicate =
       typeof stateValue === 'function'
-        ? plan => stateValue(plan.state)
-        : plan => plan.state.matches(stateValue);
+        ? (plan) => stateValue(plan.state)
+        : (plan) => plan.state.matches(stateValue);
     return testPlans.filter(predicate);
   }
 
@@ -117,15 +122,15 @@ export class TestModel<TTestContext, TContext> {
   public getTestPlans(
     statePathsMap: StatePathsMap<TContext, any>
   ): Array<TestPlan<TTestContext, TContext>> {
-    return Object.keys(statePathsMap).map(key => {
+    return Object.keys(statePathsMap).map((key) => {
       const testPlan = statePathsMap[key];
-      const paths = testPlan.paths.map(path => {
-        const segments = path.segments.map(segment => {
+      const paths = testPlan.paths.map((path) => {
+        const segments = path.segments.map((segment) => {
           return {
             ...segment,
             description: getDescription(segment.state),
-            test: testContext => this.testState(segment.state, testContext),
-            exec: testContext => this.executeEvent(segment.event, testContext)
+            test: (testContext) => this.testState(segment.state, testContext),
+            exec: (testContext) => this.executeEvent(segment.event, testContext)
           };
         });
 
@@ -140,14 +145,14 @@ export class TestModel<TTestContext, TContext> {
         }
 
         const eventsString = path.segments
-          .map(s => formatEvent(s.event))
+          .map((s) => formatEvent(s.event))
           .join(' → ');
 
         return {
           ...path,
           segments,
           description: `via ${eventsString}`,
-          test: async testContext => {
+          test: async (testContext) => {
             const testPathResult: TestPathResult = {
               segments: [],
               state: {
@@ -199,7 +204,7 @@ export class TestModel<TTestContext, TContext> {
               err.message +=
                 '\nPath:\n' +
                 testPathResult.segments
-                  .map(s => {
+                  .map((s) => {
                     const stateString = `${JSON.stringify(
                       s.segment.state.value
                     )} ${
@@ -211,17 +216,18 @@ export class TestModel<TTestContext, TContext> {
 
                     const stateResult = `\tState: ${
                       hasFailed
-                        ? chalk.gray(stateString)
+                        ? slimChalk('gray', stateString)
                         : s.state.error
-                        ? ((hasFailed = true), chalk.redBright(stateString))
-                        : chalk.greenBright(stateString)
+                        ? ((hasFailed = true),
+                          slimChalk('redBright', stateString))
+                        : slimChalk('greenBright', stateString)
                     }`;
                     const eventResult = `\tEvent: ${
                       hasFailed
-                        ? chalk.gray(eventString)
+                        ? slimChalk('gray', eventString)
                         : s.event.error
-                        ? ((hasFailed = true), chalk.red(eventString))
-                        : chalk.green(eventString)
+                        ? ((hasFailed = true), slimChalk('red', eventString))
+                        : slimChalk('green', eventString)
                     }`;
 
                     return [stateResult, eventResult].join('\n');
@@ -229,10 +235,10 @@ export class TestModel<TTestContext, TContext> {
                   .concat(
                     `\tState: ${
                       hasFailed
-                        ? chalk.gray(targetStateString)
+                        ? slimChalk('gray', targetStateString)
                         : testPathResult.state.error
-                        ? chalk.red(targetStateString)
-                        : chalk.green(targetStateString)
+                        ? slimChalk('red', targetStateString)
+                        : slimChalk('green', targetStateString)
                     }`
                   )
                   .join('\n\n');
@@ -247,7 +253,7 @@ export class TestModel<TTestContext, TContext> {
 
       return {
         ...testPlan,
-        test: async testContext => {
+        test: async (testContext) => {
           for (const path of paths) {
             await path.test(testContext);
           }
@@ -258,7 +264,10 @@ export class TestModel<TTestContext, TContext> {
     });
   }
 
-  public async testState(state: State<TContext>, testContext: TTestContext) {
+  public async testState(
+    state: State<TContext, any>,
+    testContext: TTestContext
+  ) {
     for (const id of Object.keys(state.meta)) {
       const stateNodeMeta = state.meta[id] as TestMeta<TTestContext, TContext>;
       if (typeof stateNodeMeta.test === 'function' && !stateNodeMeta.skip) {
@@ -298,10 +307,14 @@ export class TestModel<TTestContext, TContext> {
     }
   }
 
-  public getCoverage(): { stateNodes: Record<string, number> } {
+  public getCoverage(
+    options?: CoverageOptions<TContext>
+  ): { stateNodes: Record<string, number> } {
+    const filter = options ? options.filter : undefined;
     const stateNodes = getStateNodes(this.machine);
+    const filteredStateNodes = filter ? stateNodes.filter(filter) : stateNodes;
     const coverage = {
-      stateNodes: stateNodes.reduce((acc, stateNode) => {
+      stateNodes: filteredStateNodes.reduce((acc, stateNode) => {
         acc[stateNode.id] = 0;
         return acc;
       }, {})
@@ -314,16 +327,16 @@ export class TestModel<TTestContext, TContext> {
     return coverage;
   }
 
-  public testCoverage(): void {
-    const coverage = this.getCoverage();
-    const missingStateNodes = Object.keys(coverage.stateNodes).filter(id => {
+  public testCoverage(options?: CoverageOptions<TContext>): void {
+    const coverage = this.getCoverage(options);
+    const missingStateNodes = Object.keys(coverage.stateNodes).filter((id) => {
       return !coverage.stateNodes[id];
     });
 
     if (missingStateNodes.length) {
       throw new Error(
         'Missing coverage for state nodes:\n' +
-          missingStateNodes.map(id => `\t${id}`).join('\n')
+          missingStateNodes.map((id) => `\t${id}`).join('\n')
       );
     }
   }
@@ -337,12 +350,12 @@ export class TestModel<TTestContext, TContext> {
   }
 }
 
-function getDescription<T, TContext>(state: State<TContext>): string {
+function getDescription<T, TContext>(state: State<TContext, any>): string {
   const contextString =
     state.context === undefined ? '' : `(${JSON.stringify(state.context)})`;
 
   const stateStrings = state.configuration
-    .filter(sn => sn.type === 'atomic')
+    .filter((sn) => sn.type === 'atomic')
     .map(({ id }) => {
       const meta = state.meta[id] as TestMeta<T, TContext>;
       if (!meta) {
@@ -351,9 +364,11 @@ function getDescription<T, TContext>(state: State<TContext>): string {
 
       const { description } = meta;
 
-      return typeof description === 'function'
-        ? description(state)
-        : `"${description}"` || `"${JSON.stringify(state.value)}"`;
+      if (typeof description === 'function') {
+        return description(state);
+      }
+
+      return description ? `"${description}"` : JSON.stringify(state.value);
     });
 
   return (
@@ -366,7 +381,7 @@ function getDescription<T, TContext>(state: State<TContext>): string {
 function getEventSamples<T>(eventsOptions: TestModelOptions<T>['events']) {
   const result = {};
 
-  Object.keys(eventsOptions).forEach(key => {
+  Object.keys(eventsOptions).forEach((key) => {
     const eventConfig = eventsOptions[key];
     if (typeof eventConfig === 'function') {
       return [
@@ -377,7 +392,7 @@ function getEventSamples<T>(eventsOptions: TestModelOptions<T>['events']) {
     }
 
     result[key] = eventConfig.cases
-      ? eventConfig.cases.map(sample => ({
+      ? eventConfig.cases.map((sample) => ({
           type: key,
           ...sample
         }))

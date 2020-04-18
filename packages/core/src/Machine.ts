@@ -11,7 +11,7 @@ import {
 import { StateNode } from './StateNode';
 
 export function Machine<
-  TContext = DefaultContext,
+  TContext = any,
   TEvent extends EventObject = AnyEventObject
 >(
   config: MachineConfig<TContext, any, TEvent>,
@@ -34,25 +34,36 @@ export function Machine<
 >(
   config: MachineConfig<TContext, TStateSchema, TEvent>,
   options?: Partial<MachineOptions<TContext, TEvent>>,
-  initialContext: TContext | undefined = config.context
+  initialContext: TContext | (() => TContext) | undefined = config.context
 ): StateMachine<TContext, TStateSchema, TEvent> {
-  return new StateNode<TContext, TStateSchema, TEvent>(
+  const resolvedInitialContext =
+    typeof initialContext === 'function'
+      ? (initialContext as () => TContext)()
+      : initialContext;
+
+  return new StateNode<TContext, TStateSchema, TEvent, any>(
     config,
     options,
-    initialContext
+    resolvedInitialContext
   ) as StateMachine<TContext, TStateSchema, TEvent>;
 }
 
 export function createMachine<
   TContext,
   TEvent extends EventObject = AnyEventObject,
-  TState extends Typestate<TContext> = any
+  TTypestate extends Typestate<TContext> = any
 >(
   config: MachineConfig<TContext, any, TEvent>,
   options?: Partial<MachineOptions<TContext, TEvent>>
-): StateMachine<TContext, any, TEvent, TState> {
-  return new StateNode<TContext, any, TEvent, TState>(
+): StateMachine<TContext, any, TEvent, TTypestate> {
+  const resolvedInitialContext =
+    typeof config.context === 'function'
+      ? (config.context as () => TContext)()
+      : config.context;
+
+  return new StateNode<TContext, any, TEvent, TTypestate>(
     config,
-    options
-  ) as StateMachine<TContext, any, TEvent, TState>;
+    options,
+    resolvedInitialContext
+  ) as StateMachine<TContext, any, TEvent, TTypestate>;
 }

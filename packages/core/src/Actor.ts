@@ -1,8 +1,13 @@
-import { EventObject, Subscribable, InvokeDefinition } from './types';
+import {
+  EventObject,
+  Subscribable,
+  InvokeDefinition,
+  AnyEventObject
+} from './types';
 
 export interface Actor<
   TContext = any,
-  TEvent extends EventObject = EventObject
+  TEvent extends EventObject = AnyEventObject
 > extends Subscribable<TContext> {
   id: string;
   send: (event: TEvent) => any; // TODO: change to void
@@ -11,6 +16,7 @@ export interface Actor<
     id: string;
   };
   meta?: InvokeDefinition<TContext, TEvent>;
+  state?: any;
 }
 
 export function createNullActor(id: string): Actor {

@@ -1,4 +1,4 @@
-import { Machine, State, StateFrom } from '../src/index';
+import { Machine, State, StateFrom, interpret } from '../src/index';
 import { initEvent, assign } from '../src/actions';
 import { toSCXMLEvent } from '../src/utils';
 
@@ -16,13 +16,14 @@ type Events =
   | { type: 'THREE_EVENT' }
   | { type: 'TO_THREE' }
   | { type: 'TO_TWO'; foo: string }
-  | { type: 'TO_TWO_MAYBE' };
+  | { type: 'TO_TWO_MAYBE' }
+  | { type: 'TO_FINAL' };
 
 const machine = Machine<any, Events>({
   initial: 'one',
   states: {
     one: {
-      onEntry: ['enter'],
+      entry: ['enter'],
       on: {
         EXTERNAL: {
           target: 'one',
@@ -45,7 +46,8 @@ const machine = Machine<any, Events>({
           }
         },
         TO_THREE: 'three',
-        FORBIDDEN_EVENT: undefined
+        FORBIDDEN_EVENT: undefined,
+        TO_FINAL: 'success'
       }
     },
     two: {
@@ -95,6 +97,9 @@ const machine = Machine<any, Events>({
       on: {
         THREE_EVENT: '.'
       }
+    },
+    success: {
+      type: 'final'
     }
   },
   on: {
@@ -108,7 +113,7 @@ describe('State', () => {
       expect(machine.initialState.changed).not.toBeDefined();
     });
 
-    it('states from external transitions with onEntry actions should be changed', () => {
+    it('states from external transitions with entry actions should be changed', () => {
       const changedState = machine.transition(machine.initialState, 'EXTERNAL');
       expect(changedState.changed).toBe(true);
     });
@@ -175,7 +180,7 @@ describe('State', () => {
           same: {
             on: {
               EVENT: {
-                actions: assign({ count: ctx => ctx.count + 1 })
+                actions: assign({ count: (ctx) => ctx.count + 1 })
               }
             }
           }
@@ -259,6 +264,7 @@ describe('State', () => {
         'INERT',
         'INTERNAL',
         'MACHINE_EVENT',
+        'TO_FINAL',
         'TO_THREE',
         'TO_TWO',
         'TO_TWO_MAYBE'
@@ -419,6 +425,72 @@ describe('State', () => {
         )
       );
     });
+
+    describe('_sessionid', () => {
+      it('_sessionid should be null for non-invoked machines', () => {
+        const testMachine = Machine({
+          initial: 'active',
+          states: {
+            active: {}
+          }
+        });
+
+        expect(testMachine.initialState._sessionid).toBeNull();
+      });
+
+      it('_sessionid should be the service sessionId for invoked machines', (done) => {
+        const testMachine = Machine({
+          initial: 'active',
+          states: {
+            active: {
+              on: {
+                TOGGLE: 'inactive'
+              }
+            },
+            inactive: {
+              type: 'final'
+            }
+          }
+        });
+
+        const service = interpret(testMachine);
+
+        service
+          .onTransition((state) => {
+            expect(state._sessionid).toEqual(service.sessionId);
+          })
+          .onDone(() => {
+            done();
+          })
+          .start();
+
+        service.send('TOGGLE');
+      });
+
+      it('_sessionid should persist through states (manual)', () => {
+        const testMachine = Machine({
+          initial: 'active',
+          states: {
+            active: {
+              on: {
+                TOGGLE: 'inactive'
+              }
+            },
+            inactive: {
+              type: 'final'
+            }
+          }
+        });
+
+        const { initialState } = testMachine;
+
+        initialState._sessionid = 'somesessionid';
+
+        const nextState = testMachine.transition(initialState, 'TOGGLE');
+
+        expect(nextState._sessionid).toEqual('somesessionid');
+      });
+    });
   });
 
   describe('.transitions', () => {
@@ -477,6 +549,16 @@ describe('State', () => {
       const { toStrings } = initialState;
 
       expect(toStrings()).toEqual(['one']);
+    });
+  });
+
+  describe('.done', () => {
+    it('should show that a machine has not reached its final state', () => {
+      expect(machine.initialState.done).toBeFalsy();
+    });
+
+    it('should show that a machine has reached its final state', () => {
+      expect(machine.transition(undefined, 'TO_FINAL').done).toBeTruthy();
     });
   });
 });

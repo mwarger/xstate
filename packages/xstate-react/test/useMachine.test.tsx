@@ -1,6 +1,14 @@
 import * as React from 'react';
-import { useMachine } from '../src';
-import { Machine, assign, Interpreter, spawn, doneInvoke } from 'xstate';
+import { useMachine, useService } from '../src';
+import {
+  Machine,
+  assign,
+  Interpreter,
+  spawn,
+  doneInvoke,
+  State,
+  createMachine
+} from 'xstate';
 import {
   render,
   fireEvent,
@@ -41,18 +49,28 @@ describe('useMachine hook', () => {
     }
   });
 
-  const Fetcher = ({
-    onFetch = () => new Promise(res => res('some data'))
+  const persistedFetchState = fetchMachine.transition(
+    'loading',
+    doneInvoke('fetchData', 'persisted data')
+  );
+
+  const Fetcher: React.FC<{
+    onFetch: () => Promise<any>;
+    persistedState?: State<any, any>;
+  }> = ({
+    onFetch = () => new Promise((res) => res('some data')),
+    persistedState
   }) => {
     const [current, send] = useMachine(fetchMachine, {
       services: {
         fetchData: onFetch
-      }
+      },
+      state: persistedState
     });
 
     switch (current.value) {
       case 'idle':
-        return <button onClick={_ => send('FETCH')}>Fetch</button>;
+        return <button onClick={(_) => send('FETCH')}>Fetch</button>;
       case 'loading':
         return <div>Loading...</div>;
       case 'success':
@@ -68,7 +86,7 @@ describe('useMachine hook', () => {
 
   it('should work with the useMachine hook', async () => {
     const { getByText, getByTestId } = render(
-      <Fetcher onFetch={() => new Promise(res => res('fake data'))} />
+      <Fetcher onFetch={() => new Promise((res) => res('fake data'))} />
     );
     const button = getByText('Fetch');
     fireEvent.click(button);
@@ -76,6 +94,35 @@ describe('useMachine hook', () => {
     await waitForElement(() => getByText(/Success/));
     const dataEl = getByTestId('data');
     expect(dataEl.textContent).toBe('fake data');
+  });
+
+  it('should work with the useMachine hook (rehydrated state)', async () => {
+    const { getByText, getByTestId } = render(
+      <Fetcher
+        onFetch={() => new Promise((res) => res('fake data'))}
+        persistedState={persistedFetchState}
+      />
+    );
+
+    await waitForElement(() => getByText(/Success/));
+    const dataEl = getByTestId('data');
+    expect(dataEl.textContent).toBe('persisted data');
+  });
+
+  it('should work with the useMachine hook (rehydrated state config)', async () => {
+    const persistedFetchStateConfig = JSON.parse(
+      JSON.stringify(persistedFetchState)
+    );
+    const { getByText, getByTestId } = render(
+      <Fetcher
+        onFetch={() => new Promise((res) => res('fake data'))}
+        persistedState={persistedFetchStateConfig}
+      />
+    );
+
+    await waitForElement(() => getByText(/Success/));
+    const dataEl = getByTestId('data');
+    expect(dataEl.textContent).toBe('persisted data');
   });
 
   it('should provide the service', () => {
@@ -132,7 +179,7 @@ describe('useMachine hook', () => {
     render(<Test />);
   });
 
-  it('should not spawn actors until service is started', async done => {
+  it('should not spawn actors until service is started', async (done) => {
     const spawnMachine = Machine<any>({
       id: 'spawn',
       initial: 'start',
@@ -140,7 +187,7 @@ describe('useMachine hook', () => {
       states: {
         start: {
           entry: assign({
-            ref: () => spawn(new Promise(res => res(42)), 'my-promise')
+            ref: () => spawn(new Promise((res) => res(42)), 'my-promise')
           }),
           on: {
             [doneInvoke('my-promise')]: 'success'
@@ -170,7 +217,7 @@ describe('useMachine hook', () => {
     done();
   });
 
-  it('actions should not have stale data', async done => {
+  it('actions should not have stale data', async (done) => {
     const toggleMachine = Machine({
       initial: 'inactive',
       states: {
@@ -201,13 +248,13 @@ describe('useMachine hook', () => {
         <>
           <button
             data-testid="extbutton"
-            onClick={_ => {
+            onClick={(_) => {
               setExt(true);
             }}
           />
           <button
             data-testid="button"
-            onClick={_ => {
+            onClick={(_) => {
               send('TOGGLE');
             }}
           />
@@ -222,5 +269,73 @@ describe('useMachine hook', () => {
     fireEvent.click(extButton);
 
     fireEvent.click(button);
+  });
+
+  it('should compile with typed matches (createMachine)', () => {
+    interface TestContext {
+      count?: number;
+      user?: { name: string };
+    }
+
+    type TestState =
+      | {
+          value: 'loading';
+          context: { count: number; user: undefined };
+        }
+      | {
+          value: 'loaded';
+          context: { user: { name: string } };
+        };
+
+    const machine = createMachine<TestContext, any, TestState>({
+      initial: 'loading',
+      states: {
+        loading: {
+          initial: 'one',
+          states: {
+            one: {},
+            two: {}
+          }
+        },
+        loaded: {}
+      }
+    });
+
+    const ServiceApp: React.FC<{
+      service: Interpreter<TestContext, any, any, TestState>;
+    }> = ({ service }) => {
+      const [state] = useService(service);
+
+      if (state.matches('loaded')) {
+        const name = state.context.user.name;
+
+        // never called - it's okay if the name is undefined
+        expect(name).toBeTruthy();
+      } else if (state.matches('loading')) {
+        // Make sure state isn't "never" - if it is, tests will fail to compile
+        expect(state).toBeTruthy();
+      }
+
+      return null;
+    };
+
+    const App = () => {
+      const [state, , service] = useMachine(machine);
+
+      if (state.matches('loaded')) {
+        const name = state.context.user.name;
+
+        // never called - it's okay if the name is undefined
+        expect(name).toBeTruthy();
+      } else if (state.matches('loading')) {
+        // Make sure state isn't "never" - if it is, tests will fail to compile
+        expect(state).toBeTruthy();
+      }
+
+      return <ServiceApp service={service} />;
+    };
+
+    // Just testing that it compiles
+    render(<App />);
   });
 });

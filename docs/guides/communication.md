@@ -19,10 +19,10 @@ An invocation is defined in a state node's configuration with the `invoke` prope
 
 - `src` - the source of the service to invoke, which can be:
   - a machine
-  - a string, which refers to a machine defined in this machine's `options.services`
   - a function that returns a `Promise`
   - a function that returns a "callback handler"
   - a function that returns an observable
+  - a string, which refers to any of the 4 listed options defined in this machine's `options.services`
 - `id` - the unique identifier for the invoked service
 - `onDone` - (optional) the [transition](./transitions.md) to be taken when:
   - the child machine reaches its [final state](./final.md), or
@@ -31,6 +31,32 @@ An invocation is defined in a state node's configuration with the `invoke` prope
 - `onError` - (optional) the transition to be taken when the invoked service encounters an execution error.
 - `autoForward` - (optional) `true` if all events sent to this machine should also be sent (or _forwarded_) to the invoked child (`false` by default)
 - `data` - (optional, used only when invoking machines) an object that maps properties of the child machine's [context](./context.md) to a function that returns the corresponding value from the parent machine's `context`.
+
+::: warning
+Don't get the `onDone` property on a state confused with `invoke.onDone` - they are similar transitions, but refer to different things.
+
+- The `onDone` property on a [state node](./statenodes.md) refers to the compound state node reaching a [final state](./final.md).
+- The `invoke.onDone` property refers to the invocation (`invoke.src`) being done.
+
+```js {5,13}
+// ...
+loading: {
+  invoke: {
+    src: someSrc,
+    onDone: {/* ... */} // refers to `someSrc` being done
+  },
+  initial: 'loadFoo',
+  states: {
+    loadFoo: {/* ... */},
+    loadBar: {/* ... */},
+    loadingComplete: { type: 'final' }
+  },
+  onDone: 'loaded' // refers to 'loading.loadingComplete' being reached
+}
+// ...
+```
+
+:::
 
 ## Invoking Promises
 
@@ -135,7 +161,7 @@ const searchMachine = Machine({
             errorMessage: (context, event) => {
               // event is:
               // { type: 'error.execution', data: 'No query specified' }
-              return event.data.message;
+              return event.data;
             }
           })
         },
@@ -162,7 +188,7 @@ If the `onError` transition is missing and the Promise is rejected, the error wi
 Streams of events sent to the parent machine can be modeled via a callback handler, which is a function that takes in two arguments:
 
 - `callback` - called with the event to be sent
-- `onEvent` - called with a listener that [listens to events from the parent](#listening-to-parent-events)
+- `onReceive` - called with a listener that [listens to events from the parent](#listening-to-parent-events)
 
 The (optional) return value should be a function that performs cleanup (i.e., unsubscribing, preventing memory leaks, etc.) on the invoked service when the current state is exited.
 
@@ -171,7 +197,7 @@ The (optional) return value should be a function that performs cleanup (i.e., un
 counting: {
   invoke: {
     id: 'incInterval',
-    src: (context, event) => (callback, onEvent) => {
+    src: (context, event) => (callback, onReceive) => {
       // This will send the 'INC' event to the parent every second
       const id = setInterval(() => callback('INC'), 1000);
 
@@ -188,9 +214,9 @@ counting: {
 
 ### Listening to Parent Events
 
-Invoked callback handlers are also given a second argument, `onEvent`, which registers listeners for events sent to the callback handler from the parent. This allows for parent-child communication between the parent machine and the invoked callback service.
+Invoked callback handlers are also given a second argument, `onReceive`, which registers listeners for events sent to the callback handler from the parent. This allows for parent-child communication between the parent machine and the invoked callback service.
 
-For example, the parent machine sends the child `'ponger'` service a `'PING'` event. The child service can listen for that event using `onEvent(listener)`, and send a `'PONG'` event back to the parent in response:
+For example, the parent machine sends the child `'ponger'` service a `'PING'` event. The child service can listen for that event using `onReceive(listener)`, and send a `'PONG'` event back to the parent in response:
 
 ```js
 const pingPongMachine = Machine({
@@ -200,10 +226,10 @@ const pingPongMachine = Machine({
     active: {
       invoke: {
         id: 'ponger',
-        src: (context, event) => (callback, onEvent) => {
+        src: (context, event) => (callback, onReceive) => {
           // Whenever parent sends 'PING',
           // send parent 'PONG' event
-          onEvent(e => {
+          onReceive(e => {
             if (e.type === 'PING') {
               callback('PONG');
             }
@@ -467,7 +493,7 @@ events to machines. They are pure functions that return an action object
 describing what is to be sent, e.g., `{ type: 'xstate.send', event: ... }`. An
 [interpreter](./interpretation.md) will read these objects and then send them.
 
-[Read more about `send`](/docs/guides/actions.html#send-action)
+[Read more about `send`](/guides/actions.html#send-action)
 :::
 
 Here is an example of two machines, `pingMachine` and `pongMachine`, communicating with each other:
@@ -484,7 +510,7 @@ const pingMachine = Machine({
       invoke: {
         id: 'pong',
         src: pongMachine
-      }
+      },
       // Sends 'PING' event to child machine with ID 'pong'
       entry: send('PING', { to: 'pong' }),
       on: {
@@ -529,14 +555,16 @@ const service = interpret(pingMachine).start();
 // ...
 ```
 
-## Sending Responses
+## Sending Responses <Badge text="4.7+" />
 
 An invoked service (or [spawned actor](./actors.md)) can _respond_ to another service/actor; i.e., it can send an event _in response to_ an event sent by another service/actor. This is done with the `respond(...)` action creator.
 
 For example, the `'client'` machine below sends the `'CODE'` event to the invoked `'auth-server'` service, which then responds with a `'TOKEN'` event after 1 second.
 
 ```js
-import { Machine, send, respond } from 'xstate';
+import { Machine, send, actions } from 'xstate';
+
+const { respond } = actions;
 
 const authServerMachine = Machine({
   id: 'server',

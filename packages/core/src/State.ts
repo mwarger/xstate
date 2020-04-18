@@ -40,11 +40,13 @@ export function stateValuesEqual(
 
   return (
     aKeys.length === bKeys.length &&
-    aKeys.every(key => stateValuesEqual(a[key], b[key]))
+    aKeys.every((key) => stateValuesEqual(a[key], b[key]))
   );
 }
 
-export function isState(state: object | string): state is State<any> {
+export function isState<TContext, TEvent extends EventObject>(
+  state: object | string
+): state is State<TContext, TEvent> {
   if (isString(state)) {
     return false;
   }
@@ -77,7 +79,7 @@ export class State<
   TContext,
   TEvent extends EventObject = EventObject,
   TStateSchema extends StateSchema<TContext> = any,
-  TState extends Typestate<TContext> = any
+  TTypestate extends Typestate<TContext> = any
 > {
   public value: StateValue;
   public context: TContext;
@@ -89,6 +91,7 @@ export class State<
   public events: TEvent[] = [];
   public event: TEvent;
   public _event: SCXML.Event<TEvent>;
+  public _sessionid: string | null;
   /**
    * Indicates whether the state has changed from the previous state. A state is considered "changed" if:
    *
@@ -99,9 +102,13 @@ export class State<
    */
   public changed: boolean | undefined;
   /**
+   * Indicates whether the state is a final state.
+   */
+  public done: boolean | undefined;
+  /**
    * The enabled state nodes representative of the state value.
    */
-  public configuration: Array<StateNode<TContext>>;
+  public configuration: Array<StateNode<TContext, any, TEvent>>;
   /**
    * The next events that will cause a transition from the current state.
    */
@@ -130,6 +137,7 @@ export class State<
           value: stateValue.value,
           context: context as TC,
           _event: stateValue._event,
+          _sessionid: null,
           historyValue: stateValue.historyValue,
           history: stateValue.history,
           actions: [],
@@ -151,6 +159,7 @@ export class State<
       value: stateValue,
       context: context as TC,
       _event,
+      _sessionid: null,
       historyValue: undefined,
       history: undefined,
       actions: [],
@@ -190,6 +199,7 @@ export class State<
         value: stateValue.value,
         context,
         _event,
+        _sessionid: null,
         historyValue: stateValue.historyValue,
         history: stateValue.history,
         activities: stateValue.activities,
@@ -218,6 +228,7 @@ export class State<
     this.value = config.value;
     this.context = config.context;
     this._event = config._event;
+    this._sessionid = config._sessionid;
     this.event = this._event.data;
     this.historyValue = config.historyValue;
     this.history = config.history;
@@ -230,10 +241,11 @@ export class State<
     this.configuration = config.configuration;
     this.transitions = config.transitions;
     this.children = config.children;
+    this.done = !!config.done;
 
     Object.defineProperty(this, 'nextEvents', {
       get: () => {
-        return nextEvents(config.configuration);
+        return nextEvents(this.configuration);
       }
     });
   }
@@ -253,8 +265,10 @@ export class State<
     const valueKeys = keys(stateValue);
 
     return valueKeys.concat(
-      ...valueKeys.map(key =>
-        this.toStrings(stateValue[key], delimiter).map(s => key + delimiter + s)
+      ...valueKeys.map((key) =>
+        this.toStrings(stateValue[key], delimiter).map(
+          (s) => key + delimiter + s
+        )
       )
     );
   }
@@ -269,10 +283,10 @@ export class State<
    * Whether the current state value is a subset of the given parent state value.
    * @param parentStateValue
    */
-  public matches<TSV extends TState['value']>(
+  public matches<TSV extends TTypestate['value']>(
     parentStateValue: TSV
-  ): this is TState extends { value: TSV }
-    ? State<TState['context'], TEvent, TStateSchema, TState>
+  ): this is TTypestate extends { value: TSV }
+    ? State<TTypestate['context'], TEvent, TStateSchema, TTypestate>
     : never {
     return matchesState(parentStateValue as StateValue, this.value);
   }

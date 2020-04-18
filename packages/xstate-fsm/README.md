@@ -1,3 +1,5 @@
+# @xstate/fsm
+
 <p align="center">
   <a href="https://xstate.js.org">
   <br />
@@ -92,6 +94,7 @@ toggleService.stop();
   - [Machine config](#machine-config)
   - [State config](#state-config)
   - [Transition config](#transition-config)
+  - [Machine options](#machine-options)
   - [Action config](#action-config)
   - [`machine.initialState`](#machineinitialstate)
   - [`machine.transition(state, event)`](#machinetransitionstate-event)
@@ -108,13 +111,14 @@ toggleService.stop();
 
 ## API
 
-### `createMachine(config)`
+### `createMachine(config, options)`
 
 Creates a new finite state machine from the config.
 
-| Argument | Type               | Description                                 |
-| -------- | ------------------ | ------------------------------------------- |
-| `config` | object (see below) | The config object for creating the machine. |
+| Argument  | Type               | Description                                 |
+| --------- | ------------------ | ------------------------------------------- |
+| `config`  | object (see below) | The config object for creating the machine. |
+| `options` | object (see below) | The optional options object.                |
 
 **Returns:**
 
@@ -148,12 +152,11 @@ Object syntax:
 - `actions?` (Action | Action[]) - the [action(s)](#action-config) to execute when this transition is taken.
 - `cond?` (Guard) - the condition (predicate function) to test. If it returns `true`, the transition will be taken.
 
+### Machine options
+
+- `actions?` (object) - a lookup object for your string actions.
+
 ### Action config
-
-String syntax:
-
-- (string) - the action type.
-  - Resolves to `{ type: actionType, exec: undefined }`
 
 Function syntax:
 
@@ -165,6 +168,28 @@ Object syntax:
 
 - `type` (string) - the action type.
 - `exec?` (function) - the action function to execute.
+
+String syntax:
+
+- (string) - the action type.
+  - By default it resolves to `{ type: actionType, exec: undefined }`. It can resolve to resolved function or resolved object action **if** the action can be looked up in the `options.actions` object.
+
+<details>
+  <summary>Why use a string or object for defining actions?</summary>
+
+Using the string or object syntax is useful for handling actions in a custom way, rather than baking in the implementation details to your machine:
+
+```js
+const nextState = machine.transition(/* ... */);
+
+nextState.actions.forEach(action => {
+  if (action.type === 'focus') {
+    // do focus
+  }
+});
+```
+
+</details>
 
 ### `machine.initialState`
 
@@ -350,7 +375,7 @@ userService.subscribe(state => {
 ## Example
 
 ```js
-import { createMachine, assign } from '@xstate/fsm';
+import { createMachine, assign, interpret } from '@xstate/fsm';
 
 const lightMachine = createMachine({
   id: 'light',

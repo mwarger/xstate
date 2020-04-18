@@ -24,7 +24,10 @@ import {
   MachineOptions,
   ActionFunctionMap,
   SCXML,
-  EventData
+  EventData,
+  Observer,
+  Spawnable,
+  Typestate
 } from './types';
 import { State, bindActionToState, isState } from './State';
 import * as actionTypes from './actionTypes';
@@ -43,16 +46,20 @@ import {
   isMachine,
   toEventObject,
   toSCXMLEvent,
-  reportUnhandledExceptionOnInvocation
+  reportUnhandledExceptionOnInvocation,
+  symbolObservable
 } from './utils';
 import { Scheduler } from './scheduler';
 import { Actor, isActor } from './Actor';
 import { isInFinalState } from './stateUtils';
+import { registry } from './registry';
+import { registerService } from './devTools';
 
-export type StateListener<TContext, TEvent extends EventObject> = (
-  state: State<TContext, TEvent>,
-  event: TEvent
-) => void;
+export type StateListener<
+  TContext,
+  TEvent extends EventObject,
+  TTypestate extends Typestate<TContext> = any
+> = (state: State<TContext, TEvent, any, TTypestate>, event: TEvent) => void;
 
 export type ContextListener<TContext = DefaultContext> = (
   context: TContext,
@@ -85,9 +92,9 @@ const DEFAULT_SPAWN_OPTIONS = { sync: false, autoForward: false };
  * @private
  */
 const withServiceScope = (() => {
-  const serviceStack = [] as Array<Interpreter<any, any>>;
+  const serviceStack = [] as Array<Interpreter<any, any, any>>;
 
-  return <T, TService extends Interpreter<any, any>>(
+  return <T, TService extends Interpreter<any, any, any>>(
     service: TService | undefined,
     fn: (service: TService) => T
   ) => {
@@ -103,11 +110,18 @@ const withServiceScope = (() => {
   };
 })();
 
+enum InterpreterStatus {
+  NotStarted,
+  Running,
+  Stopped
+}
+
 export class Interpreter<
   // tslint:disable-next-line:max-classes-per-file
   TContext,
   TStateSchema extends StateSchema = any,
-  TEvent extends EventObject = EventObject
+  TEvent extends EventObject = EventObject,
+  TTypestate extends Typestate<TContext> = any
 > implements Actor<State<TContext, TEvent>, TEvent> {
   /**
    * The default interpreter options:
@@ -115,14 +129,14 @@ export class Interpreter<
    * - `clock` uses the global `setTimeout` and `clearTimeout` functions
    * - `logger` uses the global `console.log()` method
    */
-  public static defaultOptions: InterpreterOptions = (global => ({
+  public static defaultOptions: InterpreterOptions = ((global) => ({
     execute: true,
     deferEvents: true,
     clock: {
       setTimeout: (fn, ms) => {
         return global.setTimeout.call(null, fn, ms);
       },
-      clearTimeout: id => {
+      clearTimeout: (id) => {
         return global.clearTimeout.call(null, id);
       }
     },
@@ -133,6 +147,7 @@ export class Interpreter<
    * The current state of the interpreted machine.
    */
   private _state?: State<TContext, TEvent>;
+  private _initialState?: State<TContext, TEvent>;
   /**
    * The clock that is responsible for setting and clearing timeouts, such as delayed events and transitions.
    */
@@ -152,14 +167,16 @@ export class Interpreter<
    * Whether the service is started.
    */
   public initialized = false;
-  /**
-   * The initial state of the machine.
-   */
-  private _initialState?: State<TContext, TEvent>;
+  private _status: InterpreterStatus = InterpreterStatus.NotStarted;
 
   // Actor
   public parent?: Interpreter<any>;
   public id: string;
+
+  /**
+   * The globally unique process ID for this invocation.
+   */
+  public sessionId: string;
   public children: Map<string | number, Actor> = new Map();
   private forwardTo: Set<string> = new Set();
 
@@ -173,7 +190,7 @@ export class Interpreter<
    * @param options Interpreter options
    */
   constructor(
-    public machine: StateMachine<TContext, TStateSchema, TEvent>,
+    public machine: StateMachine<TContext, TStateSchema, TEvent, TTypestate>,
     options: Partial<InterpreterOptions> = Interpreter.defaultOptions
   ) {
     const resolvedOptions: InterpreterOptions = {
@@ -195,25 +212,24 @@ export class Interpreter<
     this.scheduler = new Scheduler({
       deferEvents: this.options.deferEvents
     });
+
+    this.sessionId = registry.bookId();
   }
   public get initialState(): State<TContext, TEvent> {
-    if (!IS_PRODUCTION) {
-      warn(
-        this.initialized,
-        // tslint:disable-next-line:max-line-length
-        `Attempted to read initial state from uninitialized service '${this.id}'. Make sure the service is started first.`
-      );
+    if (this._initialState) {
+      return this._initialState;
     }
 
-    return (
-      this._initialState ||
-      withServiceScope(this, () => this.machine.initialState)
-    );
+    return withServiceScope(this, () => {
+      this._initialState = this.machine.initialState;
+
+      return this._initialState;
+    });
   }
-  public get state(): State<TContext, TEvent> {
+  public get state(): State<TContext, TEvent, any, TTypestate> {
     if (!IS_PRODUCTION) {
       warn(
-        this.initialized,
+        this._status !== InterpreterStatus.NotStarted,
         `Attempted to read state from uninitialized service '${this.id}'. Make sure the service is started first.`
       );
     }
@@ -239,6 +255,9 @@ export class Interpreter<
     state: State<TContext, TEvent>,
     _event: SCXML.Event<TEvent>
   ): void {
+    // Attach session ID to state
+    state._sessionid = this.sessionId;
+
     // Update state
     this._state = state;
 
@@ -275,7 +294,7 @@ export class Interpreter<
     if (this.state.configuration && isDone) {
       // get final child state node
       const finalChildStateNode = state.configuration.find(
-        sn => sn.type === 'final' && sn.parent === this.machine
+        (sn) => sn.type === 'final' && sn.parent === this.machine
       );
 
       const doneData =
@@ -296,32 +315,70 @@ export class Interpreter<
    * @param listener The state listener
    */
   public onTransition(
-    listener: StateListener<TContext, TEvent>
-  ): Interpreter<TContext, TStateSchema, TEvent> {
+    listener: StateListener<TContext, TEvent, TTypestate>
+  ): this {
     this.listeners.add(listener);
+
+    // Send current state to listener
+    if (this._status === InterpreterStatus.Running) {
+      listener(this.state, this.state.event);
+    }
+
     return this;
   }
   public subscribe(
-    nextListener?: (state: State<TContext, TEvent>) => void,
+    observer: Observer<State<TContext, TEvent, any, TTypestate>>
+  ): Unsubscribable;
+  public subscribe(
+    nextListener?: (state: State<TContext, TEvent, any, TTypestate>) => void,
+    // @ts-ignore
+    errorListener?: (error: any) => void,
+    completeListener?: () => void
+  ): Unsubscribable;
+  public subscribe(
+    nextListenerOrObserver?:
+      | ((state: State<TContext, TEvent, any, TTypestate>) => void)
+      | Observer<State<TContext, TEvent, any, TTypestate>>,
     // @ts-ignore
     errorListener?: (error: any) => void,
     completeListener?: () => void
   ): Unsubscribable {
-    if (nextListener) {
-      this.onTransition(nextListener);
+    if (!nextListenerOrObserver) {
+      return { unsubscribe: () => void 0 };
     }
 
-    if (completeListener) {
-      this.onDone(completeListener);
+    let listener: (state: State<TContext, TEvent, any, TTypestate>) => void;
+    let resolvedCompleteListener = completeListener;
+
+    if (typeof nextListenerOrObserver === 'function') {
+      listener = nextListenerOrObserver;
+    } else {
+      listener = nextListenerOrObserver.next.bind(nextListenerOrObserver);
+      resolvedCompleteListener = nextListenerOrObserver.complete.bind(
+        nextListenerOrObserver
+      );
+    }
+
+    this.listeners.add(listener);
+
+    // Send current state to listener
+    if (this._status === InterpreterStatus.Running) {
+      listener(this.state);
+    }
+
+    if (resolvedCompleteListener) {
+      this.onDone(resolvedCompleteListener);
     }
 
     return {
       unsubscribe: () => {
-        nextListener && this.listeners.delete(nextListener);
-        completeListener && this.doneListeners.delete(completeListener);
+        listener && this.listeners.delete(listener);
+        resolvedCompleteListener &&
+          this.doneListeners.delete(resolvedCompleteListener);
       }
     };
   }
+
   /**
    * Adds an event listener that is notified whenever an event is sent to the running interpreter.
    * @param listener The event listener
@@ -397,23 +454,26 @@ export class Interpreter<
    */
   public start(
     initialState?: State<TContext, TEvent> | StateValue
-  ): Interpreter<TContext, TStateSchema, TEvent> {
-    if (this.initialized) {
+  ): Interpreter<TContext, TStateSchema, TEvent, TTypestate> {
+    if (this._status === InterpreterStatus.Running) {
       // Do not restart the service if it is already started
       return this;
     }
 
+    registry.register(this.sessionId, this as Actor);
     this.initialized = true;
+    this._status = InterpreterStatus.Running;
 
-    const resolvedState = withServiceScope(this, () => {
-      return initialState === undefined
-        ? this.machine.initialState
-        : isState(initialState)
-        ? this.machine.resolveState(initialState)
-        : this.machine.resolveState(
-            State.from(initialState, this.machine.context)
-          );
-    });
+    const resolvedState =
+      initialState === undefined
+        ? this.initialState
+        : withServiceScope(this, () => {
+            return isState<TContext, TEvent>(initialState)
+              ? this.machine.resolveState(initialState)
+              : this.machine.resolveState(
+                  State.from(initialState, this.machine.context)
+                );
+          });
 
     if (this.options.devTools) {
       this.attachDev();
@@ -445,7 +505,7 @@ export class Interpreter<
     }
 
     // Stop all children
-    this.children.forEach(child => {
+    this.children.forEach((child) => {
       if (isFunction(child.stop)) {
         child.stop();
       }
@@ -458,6 +518,8 @@ export class Interpreter<
 
     this.scheduler.clear();
     this.initialized = false;
+    this._status = InterpreterStatus.Stopped;
+    registry.free(this.sessionId);
 
     return this;
   }
@@ -481,7 +543,25 @@ export class Interpreter<
 
     const _event = toSCXMLEvent(toEventObject(event as Event<TEvent>, payload));
 
-    if (!this.initialized && this.options.deferEvents) {
+    if (this._status === InterpreterStatus.Stopped) {
+      // do nothing
+      if (!IS_PRODUCTION) {
+        warn(
+          false,
+          `Event "${_event.name}" was sent to stopped service "${
+            this.machine.id
+          }". This service has already reached its final state, and will not transition.\nEvent: ${JSON.stringify(
+            _event.data
+          )}`
+        );
+      }
+      return this.state;
+    }
+
+    if (
+      this._status === InterpreterStatus.NotStarted &&
+      this.options.deferEvents
+    ) {
       // tslint:disable-next-line:no-console
       if (!IS_PRODUCTION) {
         warn(
@@ -493,7 +573,7 @@ export class Interpreter<
           )}`
         );
       }
-    } else if (!this.initialized) {
+    } else if (this._status !== InterpreterStatus.Running) {
       throw new Error(
         `Event "${_event.name}" was sent to uninitialized service "${
           this.machine.id
@@ -518,7 +598,10 @@ export class Interpreter<
   };
 
   private batch(events: Array<TEvent | TEvent['type']>): void {
-    if (!this.initialized && this.options.deferEvents) {
+    if (
+      this._status === InterpreterStatus.NotStarted &&
+      this.options.deferEvents
+    ) {
       // tslint:disable-next-line:no-console
       if (!IS_PRODUCTION) {
         warn(
@@ -530,7 +613,7 @@ export class Interpreter<
           )}`
         );
       }
-    } else if (!this.initialized) {
+    } else if (this._status !== InterpreterStatus.Running) {
       throw new Error(
         // tslint:disable-next-line:max-line-length
         `${events.length} event(s) were sent to uninitialized service "${this.machine.id}". Make sure .start() is called for this service, or set { deferEvents: true } in the service options.`
@@ -539,19 +622,28 @@ export class Interpreter<
 
     this.scheduler.schedule(() => {
       let nextState = this.state;
+      let batchChanged = false;
+      const batchedActions: Array<ActionObject<TContext, TEvent>> = [];
       for (const event of events) {
-        const { changed } = nextState;
         const _event = toSCXMLEvent(event);
-        const actions = nextState.actions.map(a =>
-          bindActionToState(a, nextState)
-        ) as Array<ActionObject<TContext, TEvent>>;
-        nextState = this.machine.transition(nextState, _event);
-        nextState.actions.unshift(...actions);
-        nextState.changed = nextState.changed || !!changed;
 
         this.forward(_event);
+
+        nextState = withServiceScope(this, () => {
+          return this.machine.transition(nextState, _event);
+        });
+
+        batchedActions.push(
+          ...(nextState.actions.map((a) =>
+            bindActionToState(a, nextState)
+          ) as Array<ActionObject<TContext, TEvent>>)
+        );
+
+        batchChanged = batchChanged || !!nextState.changed;
       }
 
+      nextState.changed = batchChanged;
+      nextState.actions = batchedActions;
       this.update(nextState, toSCXMLEvent(events[events.length - 1]));
     });
   }
@@ -575,7 +667,7 @@ export class Interpreter<
       ? this.parent
       : isActor(to)
       ? to
-      : this.children.get(to);
+      : this.children.get(to) || registry.get(to as string);
 
     if (!target) {
       if (!isParent) {
@@ -598,7 +690,9 @@ export class Interpreter<
       // Send SCXML events to machines
       (target as Interpreter<TContext, TStateSchema, TEvent>).send({
         ...event,
-        origin: this.id
+        name:
+          event.name === actionTypes.error ? `${error(this.id)}` : event.name,
+        origin: this.sessionId
       });
     } else {
       // Send normal events to other targets
@@ -620,7 +714,7 @@ export class Interpreter<
     if (
       _event.name.indexOf(actionTypes.errorPlatform) === 0 &&
       !this.state.nextEvents.some(
-        nextEvent => nextEvent.indexOf(actionTypes.errorPlatform) === 0
+        (nextEvent) => nextEvent.indexOf(actionTypes.errorPlatform) === 0
       )
     ) {
       throw (_event.data as any).data;
@@ -646,16 +740,13 @@ export class Interpreter<
     }
   }
   private defer(sendAction: SendActionObject<TContext, TEvent>): void {
-    this.delayedEventsMap[sendAction.id] = this.clock.setTimeout(
-      () => {
-        if (sendAction.to) {
-          this.sendTo(sendAction._event, sendAction.to);
-        } else {
-          this.send(sendAction._event);
-        }
-      },
-      sendAction.delay as number
-    );
+    this.delayedEventsMap[sendAction.id] = this.clock.setTimeout(() => {
+      if (sendAction.to) {
+        this.sendTo(sendAction._event, sendAction.to);
+      } else {
+        this.send(sendAction._event);
+      }
+    }, sendAction.delay as number);
   }
   private cancel(sendId: string | number): void {
     this.clock.clearTimeout(this.delayedEventsMap[sendId]);
@@ -676,8 +767,22 @@ export class Interpreter<
       : action.exec;
 
     if (exec) {
-      // @ts-ignore (TODO: fix for TypeDoc)
-      return exec(context, _event.data, { action, state: this.state });
+      try {
+        return exec(context, _event.data, {
+          action,
+          state: this.state,
+          _event
+        });
+      } catch (err) {
+        if (this.parent) {
+          this.parent.send({
+            type: 'xstate.error',
+            data: err
+          } as EventObject);
+        }
+
+        throw err;
+      }
     }
 
     switch (action.type) {
@@ -804,30 +909,32 @@ export class Interpreter<
 
     return undefined;
   }
+  private removeChild(childId: string): void {
+    this.children.delete(childId);
+    this.forwardTo.delete(childId);
+
+    delete this.state.children[childId];
+  }
+
   private stopChild(childId: string): void {
     const child = this.children.get(childId);
     if (!child) {
       return;
     }
 
-    this.children.delete(childId);
-    this.forwardTo.delete(childId);
-
-    delete this.state.children[childId];
+    this.removeChild(childId);
 
     if (isFunction(child.stop)) {
       child.stop();
     }
   }
-  public spawn<TChildContext>(
-    entity: Spawnable<TChildContext>,
-    name: string,
-    options?: SpawnOptions
-  ): Actor {
+  public spawn(entity: Spawnable, name: string, options?: SpawnOptions): Actor {
     if (isPromiseLike(entity)) {
       return this.spawnPromise(Promise.resolve(entity), name);
     } else if (isFunction(entity)) {
-      return this.spawnCallback(entity, name);
+      return this.spawnCallback(entity as InvokeCallback, name);
+    } else if (isActor(entity)) {
+      return this.spawnActor(entity);
     } else if (isObservable<TEvent>(entity)) {
       return this.spawnObservable(entity, name);
     } else if (isMachine(entity)) {
@@ -841,11 +948,11 @@ export class Interpreter<
   public spawnMachine<
     TChildContext,
     TChildStateSchema,
-    TChildEvents extends EventObject
+    TChildEvent extends EventObject
   >(
-    machine: StateMachine<TChildContext, TChildStateSchema, TChildEvents>,
+    machine: StateMachine<TChildContext, TChildStateSchema, TChildEvent>,
     options: { id?: string; autoForward?: boolean; sync?: boolean } = {}
-  ): Actor<State<TChildContext, TChildEvents>> {
+  ): Interpreter<TChildContext, TChildStateSchema, TChildEvent> {
     const childService = new Interpreter(machine, {
       ...this.options, // inherit options from this interpreter
       parent: this,
@@ -858,52 +965,53 @@ export class Interpreter<
     };
 
     if (resolvedOptions.sync) {
-      childService.onTransition(state => {
-        this.send(actionTypes.update as any, { state, id: childService.id });
+      childService.onTransition((state) => {
+        this.send(actionTypes.update as any, {
+          state,
+          id: childService.id
+        });
       });
     }
 
-    childService
-      .onDone(doneEvent => {
-        this.send(doneEvent as any);
-      })
-      .start();
+    const actor = childService;
 
-    const actor = childService as Actor<State<TChildContext, TChildEvents>>;
-
-    // const actor = {
-    //   id: childService.id,
-    //   send: childService.send,
-    //   state: childService.state,
-    //   subscribe: childService.subscribe,
-    //   toJSON() {
-    //     return { id: childService.id };
-    //   }
-    // } as Actor<State<TChildContext, TChildEvents>>;
-
-    this.children.set(childService.id, actor);
+    this.children.set(
+      childService.id,
+      actor as Actor<State<TChildContext, TChildEvent>, TChildEvent>
+    );
 
     if (resolvedOptions.autoForward) {
       this.forwardTo.add(childService.id);
     }
 
+    childService
+      .onDone((doneEvent) => {
+        this.removeChild(childService.id);
+        this.send(toSCXMLEvent(doneEvent as any, { origin: childService.id }));
+      })
+      .start();
+
     return actor;
   }
-  private spawnPromise(promise: Promise<any>, id: string): Actor {
+  private spawnPromise<T>(promise: Promise<T>, id: string): Actor<T, never> {
     let canceled = false;
 
     promise.then(
-      response => {
+      (response) => {
         if (!canceled) {
-          this.send(doneInvoke(id, response) as any);
+          this.removeChild(id);
+          this.send(
+            toSCXMLEvent(doneInvoke(id, response) as any, { origin: id })
+          );
         }
       },
-      errorData => {
+      (errorData) => {
         if (!canceled) {
+          this.removeChild(id);
           const errorEvent = error(id, errorData);
           try {
             // Send "error.platform.id" to this (parent).
-            this.send(errorEvent as any);
+            this.send(toSCXMLEvent(errorEvent as any, { origin: id }));
           } catch (error) {
             reportUnhandledExceptionOnInvocation(errorData, error, id);
             if (this.devTools) {
@@ -927,7 +1035,7 @@ export class Interpreter<
       subscribe: (next, handleError, complete) => {
         let unsubscribed = false;
         promise.then(
-          response => {
+          (response) => {
             if (unsubscribed) {
               return;
             }
@@ -937,7 +1045,7 @@ export class Interpreter<
             }
             complete && complete();
           },
-          err => {
+          (err) => {
             if (unsubscribed) {
               return;
             }
@@ -967,7 +1075,7 @@ export class Interpreter<
     const listeners = new Set<(e: EventObject) => void>();
 
     const receive = (e: TEvent) => {
-      listeners.forEach(listener => listener(e));
+      listeners.forEach((listener) => listener(e));
       if (canceled) {
         return;
       }
@@ -977,7 +1085,7 @@ export class Interpreter<
     let callbackStop;
 
     try {
-      callbackStop = callback(receive, newListener => {
+      callbackStop = callback(receive, (newListener) => {
         receivers.add(newListener);
       });
     } catch (err) {
@@ -992,8 +1100,8 @@ export class Interpreter<
 
     const actor = {
       id,
-      send: event => receivers.forEach(receiver => receiver(event)),
-      subscribe: next => {
+      send: (event) => receivers.forEach((receiver) => receiver(event)),
+      subscribe: (next) => {
         listeners.add(next);
 
         return {
@@ -1022,14 +1130,16 @@ export class Interpreter<
     id: string
   ): Actor {
     const subscription = source.subscribe(
-      value => {
-        this.send(value);
+      (value) => {
+        this.send(toSCXMLEvent(value, { origin: id }));
       },
-      err => {
-        this.send(error(id, err) as any);
+      (err) => {
+        this.removeChild(id);
+        this.send(toSCXMLEvent(error(id, err) as any, { origin: id }));
       },
       () => {
-        this.send(doneInvoke(id) as any);
+        this.removeChild(id);
+        this.send(toSCXMLEvent(doneInvoke(id) as any, { origin: id }));
       }
     );
 
@@ -1049,6 +1159,11 @@ export class Interpreter<
 
     return actor;
   }
+  private spawnActor<T extends Actor>(actor: T): T {
+    this.children.set(actor.id, actor);
+
+    return actor;
+  }
   private spawnActivity(activity: ActivityDefinition<TContext, TEvent>): void {
     const implementation =
       this.machine.options && this.machine.options.activities
@@ -1056,10 +1171,10 @@ export class Interpreter<
         : undefined;
 
     if (!implementation) {
-      // tslint:disable-next-line:no-console
       if (!IS_PRODUCTION) {
         warn(false, `No implementation found for activity '${activity.type}'`);
       }
+      // tslint:disable-next-line:no-console
       return;
     }
 
@@ -1084,34 +1199,40 @@ export class Interpreter<
     });
   }
 
-  private attachDev() {
-    if (
-      this.options.devTools &&
-      typeof window !== 'undefined' &&
-      (window as any).__REDUX_DEVTOOLS_EXTENSION__
-    ) {
-      const devToolsOptions =
-        typeof this.options.devTools === 'object'
-          ? this.options.devTools
-          : undefined;
-      this.devTools = (window as any).__REDUX_DEVTOOLS_EXTENSION__.connect({
-        name: this.id,
-        autoPause: true,
-        stateSanitizer: (state: State<any, any>): object => {
-          return {
-            value: state.value,
-            context: state.context,
-            actions: state.actions
-          };
-        },
-        ...devToolsOptions,
-        features: {
-          jump: false,
-          skip: false,
-          ...(devToolsOptions ? (devToolsOptions as any).features : undefined)
-        }
-      });
-      this.devTools.init(this.state);
+  private attachDev(): void {
+    if (this.options.devTools && typeof window !== 'undefined') {
+      if ((window as any).__REDUX_DEVTOOLS_EXTENSION__) {
+        const devToolsOptions =
+          typeof this.options.devTools === 'object'
+            ? this.options.devTools
+            : undefined;
+        this.devTools = (window as any).__REDUX_DEVTOOLS_EXTENSION__.connect(
+          {
+            name: this.id,
+            autoPause: true,
+            stateSanitizer: (state: State<any, any>): object => {
+              return {
+                value: state.value,
+                context: state.context,
+                actions: state.actions
+              };
+            },
+            ...devToolsOptions,
+            features: {
+              jump: false,
+              skip: false,
+              ...(devToolsOptions
+                ? (devToolsOptions as any).features
+                : undefined)
+            }
+          },
+          this.machine
+        );
+        this.devTools.init(this.state);
+      }
+
+      // add XState-specific dev tooling hook
+      registerService(this);
     }
   }
   public toJSON() {
@@ -1119,13 +1240,11 @@ export class Interpreter<
       id: this.id
     };
   }
-}
 
-export type Spawnable<TContext> =
-  | StateMachine<TContext, any, any>
-  | Promise<TContext>
-  | InvokeCallback
-  | Subscribable<TContext>;
+  public [symbolObservable]() {
+    return this;
+  }
+}
 
 const createNullActor = (name: string = 'null'): Actor => ({
   id: name,
@@ -1149,21 +1268,21 @@ const resolveSpawnOptions = (nameOrOptions?: string | SpawnOptions) => {
   };
 };
 
-export function spawn<TContext>(
-  entity: StateMachine<TContext, any, any>,
+export function spawn<TC, TE extends EventObject>(
+  entity: StateMachine<TC, any, TE>,
   nameOrOptions?: string | SpawnOptions
-): Interpreter<TContext>;
-export function spawn<TContext>(
-  entity: Exclude<Spawnable<TContext>, StateMachine<any, any, any>>,
+): Interpreter<TC, any, TE>;
+export function spawn(
+  entity: Spawnable,
   nameOrOptions?: string | SpawnOptions
-): Actor<TContext>;
-export function spawn<TContext>(
-  entity: Spawnable<TContext>,
+): Actor;
+export function spawn(
+  entity: Spawnable,
   nameOrOptions?: string | SpawnOptions
-) {
+): Actor {
   const resolvedOptions = resolveSpawnOptions(nameOrOptions);
 
-  return withServiceScope(undefined, service => {
+  return withServiceScope(undefined, (service) => {
     if (!IS_PRODUCTION) {
       warn(
         !!service,
@@ -1190,15 +1309,18 @@ export function spawn<TContext>(
 export function interpret<
   TContext = DefaultContext,
   TStateSchema extends StateSchema = any,
-  TEvent extends EventObject = EventObject
+  TEvent extends EventObject = EventObject,
+  TTypestate extends Typestate<TContext> = any
 >(
-  machine: StateMachine<TContext, TStateSchema, TEvent>,
+  machine: StateMachine<TContext, TStateSchema, TEvent, TTypestate>,
   options?: Partial<InterpreterOptions>
 ) {
-  const interpreter = new Interpreter<TContext, TStateSchema, TEvent>(
-    machine,
-    options
-  );
+  const interpreter = new Interpreter<
+    TContext,
+    TStateSchema,
+    TEvent,
+    TTypestate
+  >(machine, options);
 
   return interpreter;
 }

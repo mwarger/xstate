@@ -10,7 +10,6 @@ import {
   HistoryValue,
   AssignAction,
   Condition,
-  Guard,
   Subscribable,
   StateMachine,
   ConditionPredicate,
@@ -18,9 +17,12 @@ import {
   StateLike,
   EventData,
   TransitionConfig,
-  TransitionConfigTargetShortcut,
+  TransitionConfigTarget,
   NullEvent,
-  SingleOrArray
+  SingleOrArray,
+  Guard,
+  GuardPredicate,
+  GuardMeta
 } from './types';
 import {
   STATE_DELIMITER,
@@ -30,6 +32,7 @@ import {
 import { IS_PRODUCTION } from './environment';
 import { StateNode } from './StateNode';
 import { State } from '.';
+import { Actor } from './Actor';
 
 export function keys<T extends object>(value: T): Array<keyof T & string> {
   return Object.keys(value) as Array<keyof T & string>;
@@ -56,7 +59,7 @@ export function matchesState(
     return parentStateValue in childStateValue;
   }
 
-  return keys(parentStateValue).every(key => {
+  return keys(parentStateValue).every((key) => {
     if (!(key in childStateValue)) {
       return false;
     }
@@ -110,10 +113,10 @@ export function toStatePath(
 export function isStateLike(state: any): state is StateLike<any> {
   return (
     typeof state === 'object' &&
-    ('value' in state &&
-      'context' in state &&
-      'event' in state &&
-      '_event' in state)
+    'value' in state &&
+    'context' in state &&
+    'event' in state &&
+    '_event' in state
   );
 }
 
@@ -222,7 +225,7 @@ export function nestedPath<T extends Record<string, any>>(
   props: string[],
   accessorProp: keyof T
 ): (object: T) => T {
-  return object => {
+  return (object) => {
     let result: T = object;
 
     for (const prop of props) {
@@ -243,7 +246,7 @@ export function toStatePaths(stateValue: StateValue | undefined): string[][] {
   }
 
   const result = flatten(
-    keys(stateValue).map(key => {
+    keys(stateValue).map((key) => {
       const subStateValue = stateValue[key];
 
       if (
@@ -253,7 +256,7 @@ export function toStatePaths(stateValue: StateValue | undefined): string[][] {
         return [[key]];
       }
 
-      return toStatePaths(stateValue[key]).map(subPath => {
+      return toStatePaths(stateValue[key]).map((subPath) => {
         return [key].concat(subPath);
       });
     })
@@ -262,7 +265,7 @@ export function toStatePaths(stateValue: StateValue | undefined): string[][] {
   return result;
 }
 
-export const pathsToStateValue = (paths: string[][]): StateValue => {
+export function pathsToStateValue(paths: string[][]): StateValue {
   const result: StateValue = {};
 
   if (paths && paths.length === 1 && paths[0].length === 1) {
@@ -285,7 +288,7 @@ export const pathsToStateValue = (paths: string[][]): StateValue => {
   }
 
   return result;
-};
+}
 
 export function flatten<T>(array: Array<T | T[]>): T[] {
   return ([] as T[]).concat(...array);
@@ -404,6 +407,9 @@ export function updateContext<TContext, TEvent extends EventObject>(
   assignActions: Array<AssignAction<TContext, TEvent>>,
   state?: State<TContext, TEvent>
 ): TContext {
+  if (!IS_PRODUCTION) {
+    warn(!!context, 'Attempting to update undefined context');
+  }
   const updatedContext = context
     ? assignActions.reduce((acc, assignAction) => {
         const { assignment } = assignAction as AssignAction<TContext, TEvent>;
@@ -519,12 +525,19 @@ export function isObservable<T>(
   }
 }
 
+export const symbolObservable = (() =>
+  (typeof Symbol === 'function' && Symbol.observable) || '@@observable')();
+
 export function isMachine(value: any): value is StateMachine<any, any, any> {
   try {
     return '__xstatenode' in value;
   } catch (e) {
     return false;
   }
+}
+
+export function isActor(value: any): value is Actor {
+  return !!value && typeof value.send === 'function';
 }
 
 export const uniqueId = (() => {
@@ -571,31 +584,36 @@ export function toTransitionConfigArray<TContext, TEvent extends EventObject>(
   event: TEvent['type'] | NullEvent['type'] | '*',
   configLike: SingleOrArray<
     | TransitionConfig<TContext, TEvent>
-    | TransitionConfigTargetShortcut<TContext, TEvent>
+    | TransitionConfigTarget<TContext, TEvent>
   >
 ): Array<
   TransitionConfig<TContext, TEvent> & {
     event: TEvent['type'] | NullEvent['type'] | '*';
   }
 > {
-  const transitions = toArrayStrict(configLike).map(transitionLike => {
+  const transitions = toArrayStrict(configLike).map((transitionLike) => {
     if (
       typeof transitionLike === 'undefined' ||
       typeof transitionLike === 'string' ||
       isMachine(transitionLike)
     ) {
+      // @ts-ignore until Type instantiation is excessively deep and possibly infinite bug is fixed
       return { target: transitionLike, event };
     }
 
     return { ...transitionLike, event };
-  });
+  }) as Array<
+    TransitionConfig<TContext, TEvent> & {
+      event: TEvent['type'] | NullEvent['type'] | '*';
+    } // TODO: fix 'as' (remove)
+  >;
 
   return transitions;
 }
 
-export function normalizeTarget<TContext>(
-  target: SingleOrArray<string | StateNode<TContext>> | undefined
-): Array<string | StateNode<TContext>> | undefined {
+export function normalizeTarget<TContext, TEvent extends EventObject>(
+  target: SingleOrArray<string | StateNode<TContext, any, TEvent>> | undefined
+): Array<string | StateNode<TContext, any, TEvent>> | undefined {
   if (target === undefined || target === TARGETLESS_KEY) {
     return undefined;
   }
@@ -627,4 +645,38 @@ export function reportUnhandledExceptionOnInvocation(
       );
     }
   }
+}
+
+export function evaluateGuard<TContext, TEvent extends EventObject>(
+  machine: StateNode<TContext, any, TEvent>,
+  guard: Guard<TContext, TEvent>,
+  context: TContext,
+  _event: SCXML.Event<TEvent>,
+  state: State<TContext, TEvent>
+): boolean {
+  const { guards } = machine.options;
+  const guardMeta: GuardMeta<TContext, TEvent> = {
+    state,
+    cond: guard,
+    _event
+  };
+
+  // TODO: do not hardcode!
+  if (guard.type === DEFAULT_GUARD_TYPE) {
+    return (guard as GuardPredicate<TContext, TEvent>).predicate(
+      context,
+      _event.data,
+      guardMeta
+    );
+  }
+
+  const condFn = guards[guard.type];
+
+  if (!condFn) {
+    throw new Error(
+      `Guard '${guard.type}' is not implemented on machine '${machine.id}'.`
+    );
+  }
+
+  return condFn(context, _event.data, guardMeta);
 }
